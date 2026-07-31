@@ -116,4 +116,133 @@ async def verify_payment(req: VerifyRequest):
         
 @app.get("/api/health")
 async def health_check():
+    # In the future, this endpoint will trigger the background review sync for all active users
     return {"status": "healthy", "service": "gbp-auto-master-backend"}
+
+# ==========================================
+# GOOGLE BUSINESS PROFILE & AI ENGINE
+# ==========================================
+
+import requests
+import google.generativeai as genai
+import itertools
+
+# We initialize Gemini to support multiple rotating keys for the free tier
+gemini_keys_env = os.getenv('GEMINI_API_KEYS', '')
+gemini_keys = [k.strip() for k in gemini_keys_env.split(',')] if gemini_keys_env else []
+key_cycle = itertools.cycle(gemini_keys) if gemini_keys else None
+
+def get_next_gemini_key():
+    if not key_cycle:
+        return None
+    return next(key_cycle)
+
+class GoogleSyncRequest(BaseModel):
+    user_id: str
+
+@app.post("/api/google/locations")
+async def get_google_locations(req: GoogleSyncRequest):
+    """
+    Fetches the user's provider token from Supabase,
+    and calls the Google Business Profile API to list their locations.
+    """
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database not configured")
+        
+    try:
+        # 1. Fetch user's Google token from Supabase Auth
+        user_response = supabase.auth.admin.get_user_by_id(req.user_id)
+        # Note: In a real production setup, we would fetch the stored provider_token 
+        # or use a securely stored refresh_token to get a fresh access_token.
+        # token = fetch_secure_token(req.user_id)
+        
+        # 2. Call Google Business Profile API
+        # url = f"https://mybusinessbusinessinformation.googleapis.com/v1/accounts/{account_id}/locations"
+        # headers = {"Authorization": f"Bearer {token}"}
+        # response = requests.get(url, headers=headers)
+        
+        # 3. For now, since the API is not yet approved in Google Cloud Console,
+        # we return a structured error guiding the user.
+        return {
+            "status": "pending_setup", 
+            "message": "Google API access is not yet configured in Google Cloud Console.",
+            "locations": []
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/google/sync-reviews")
+async def sync_and_reply_reviews(req: GoogleSyncRequest):
+    """
+    Fetches unreplied reviews, uses Gemini to generate SEO-optimized replies, 
+    and posts them back to Google.
+    """
+    # 1. Verify user subscription status
+    # 2. Fetch unreplied reviews via Google API
+    
+    # 3. Use Gemini to generate reply using key rotation:
+    # api_key = get_next_gemini_key()
+    # if not api_key:
+    #     raise HTTPException(status_code=500, detail="Gemini API keys not configured")
+    # genai.configure(api_key=api_key)
+    # gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+    # prompt = "Write a professional reply to this 5-star review. Mention 'emergency plumber'."
+    # ai_reply = gemini_model.generate_content(prompt)
+    
+    # 4. Post reply back to Google API
+    
+    return {
+        "status": "pending_setup",
+        "message": "Gemini AI Engine (with key rotation) is standing by. Waiting for Google API approval."
+    }
+
+# ==========================================
+# CALENDAR: HYBRID STORAGE SCRUBBER
+# ==========================================
+from datetime import datetime, timedelta
+
+@app.get("/api/cron/scrub-calendar")
+async def scrub_calendar_images():
+    """
+    CRON JOB ENDPOINT (Runs nightly at midnight)
+    Finds all calendar posts that were successfully published yesterday (or older),
+    deletes the heavy image file from Supabase Storage to save the 1GB free tier limit,
+    and updates the database row to image_url=null (leaving the text history intact).
+    """
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database not configured")
+        
+    try:
+        # Calculate yesterday's date
+        yesterday = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
+        
+        # 1. Find all published posts from yesterday or older that still have an image attached
+        response = supabase.table('calendar_posts').select('id, image_url').eq('status', 'published').lt('post_date', yesterday).not_.is_('image_url', 'null').execute()
+        
+        posts_to_scrub = response.data
+        if not posts_to_scrub:
+            return {"status": "success", "message": "No old images to scrub today.", "scrubbed_count": 0}
+            
+        scrubbed_count = 0
+        
+        for post in posts_to_scrub:
+            image_url = post['image_url']
+            # The image_url is usually a public URL. We need to extract the exact file path from it.
+            # Example: https://[project].supabase.co/storage/v1/object/public/calendar_images/user123/img.jpg
+            # We extract just the path after the bucket name: "user123/img.jpg"
+            if 'calendar_images/' in image_url:
+                file_path = image_url.split('calendar_images/')[-1]
+                
+                # 2. Delete the heavy file from Supabase Storage
+                supabase.storage.from_('calendar_images').remove([file_path])
+                
+                # 3. Update the database row to remove the URL (the text caption stays!)
+                supabase.table('calendar_posts').update({'image_url': None}).eq('id', post['id']).execute()
+                
+                scrubbed_count += 1
+                
+        return {"status": "success", "message": f"Successfully scrubbed {scrubbed_count} old images to save storage space.", "scrubbed_count": scrubbed_count}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
