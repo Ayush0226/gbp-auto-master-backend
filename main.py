@@ -139,34 +139,55 @@ def get_next_gemini_key():
 
 class GoogleSyncRequest(BaseModel):
     user_id: str
+    provider_token: str = None
 
 @app.post("/api/google/locations")
 async def get_google_locations(req: GoogleSyncRequest):
     """
-    Fetches the user's provider token from Supabase,
+    Fetches the user's provider token from the frontend request,
     and calls the Google Business Profile API to list their locations.
     """
-    if not supabase:
-        raise HTTPException(status_code=500, detail="Database not configured")
-        
     try:
-        # 1. Fetch user's Google token from Supabase Auth
-        user_response = supabase.auth.admin.get_user_by_id(req.user_id)
-        # Note: In a real production setup, we would fetch the stored provider_token 
-        # or use a securely stored refresh_token to get a fresh access_token.
-        # token = fetch_secure_token(req.user_id)
+        if not req.provider_token:
+            return {"status": "error", "message": "Missing Google provider token. Please log out and log in again."}
+            
+        headers = {"Authorization": f"Bearer {req.provider_token}"}
         
-        # 2. Call Google Business Profile API
-        # url = f"https://mybusinessbusinessinformation.googleapis.com/v1/accounts/{account_id}/locations"
-        # headers = {"Authorization": f"Bearer {token}"}
-        # response = requests.get(url, headers=headers)
+        # 1. Fetch Accounts
+        acc_url = "https://mybusinessaccountmanagement.googleapis.com/v1/accounts"
+        acc_resp = requests.get(acc_url, headers=headers)
         
-        # 3. For now, since the API is not yet approved in Google Cloud Console,
-        # we return a structured error guiding the user.
+        if not acc_resp.ok:
+            return {"status": "error", "message": f"Google API Error (Accounts): {acc_resp.text}"}
+            
+        accounts = acc_resp.json().get('accounts', [])
+        if not accounts:
+            return {"status": "success", "locations": [], "message": "No Google Business Accounts found on this email."}
+            
+        # 2. Fetch Locations for the first account
+        account_name = accounts[0]['name']
+        loc_url = f"https://mybusinessbusinessinformation.googleapis.com/v1/{account_name}/locations?readMask=name,title"
+        
+        loc_resp = requests.get(loc_url, headers=headers)
+        if not loc_resp.ok:
+            return {"status": "error", "message": f"Google API Error (Locations): {loc_resp.text}"}
+            
+        google_locations = loc_resp.json().get('locations', [])
+        
+        # 3. Format for dashboard
+        dashboard_locations = []
+        for loc in google_locations:
+            dashboard_locations.append({
+                "id": loc.get("name"), # e.g. "locations/12345"
+                "name": loc.get("title", "Unnamed Location"),
+                "reviews": 0, 
+                "rating": 0.0,
+                "subscribed": False 
+            })
+            
         return {
-            "status": "pending_setup", 
-            "message": "Google API access is not yet configured in Google Cloud Console.",
-            "locations": []
+            "status": "success", 
+            "locations": dashboard_locations
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
