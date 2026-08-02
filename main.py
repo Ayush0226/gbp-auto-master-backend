@@ -114,10 +114,15 @@ async def verify_payment(req: VerifyRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
         
+@app.get("/api/payment/key")
+async def get_razorpay_key():
+    return {"key": os.getenv("RAZORPAY_KEY_ID", "")}
+
 @app.get("/api/health")
 async def health_check():
     # In the future, this endpoint will trigger the background review sync for all active users
     return {"status": "healthy", "service": "gbp-auto-master-backend"}
+
 
 # ==========================================
 # GOOGLE BUSINESS PROFILE & AI ENGINE
