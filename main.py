@@ -62,7 +62,7 @@ async def create_order(req: OrderRequest):
             raise HTTPException(status_code=500, detail="Supabase not configured")
         try:
             # Updating user metadata using admin role to bypass security policies
-            supabase.auth.admin.update_user_by_id(req.user_id, user_metadata={"subscription_status": "active"})
+            supabase.auth.admin.update_user_by_id(req.user_id, {"user_metadata": {"subscription_status": "active"}})
             return {"status": "success", "message": "Free trial activated successfully", "free_trial": True}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -106,7 +106,7 @@ async def verify_payment(req: VerifyRequest):
         if not supabase:
             raise HTTPException(status_code=500, detail="Supabase not configured")
             
-        supabase.auth.admin.update_user_by_id(req.user_id, user_metadata={"subscription_status": "active"})
+        supabase.auth.admin.update_user_by_id(req.user_id, {"user_metadata": {"subscription_status": "active"}})
         
         return {"status": "success", "message": "Payment verified and subscription activated"}
     except razorpay.errors.SignatureVerificationError:
