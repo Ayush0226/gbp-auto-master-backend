@@ -62,16 +62,29 @@ async def create_order(req: OrderRequest):
         if not supabase:
             raise HTTPException(status_code=500, detail="Supabase not configured")
         try:
-            # Fetch current metadata to append location
-            user_data = supabase.auth.admin.get_user_by_id(req.user_id)
-            user_meta = user_data.user.user_metadata if user_data.user else {}
-            subscribed = user_meta.get("subscribed_locations", [])
-            
-            if req.location_id and req.location_id not in subscribed:
-                subscribed.append(req.location_id)
+            # Bypass logic
+            if req.promo_code == 'ATYAUNSUHJ':
+                user_data = supabase.auth.admin.get_user_by_id(req.user_id)
+                user_meta = user_data.user.user_metadata if user_data.user else {}
                 
-            supabase.auth.admin.update_user_by_id(req.user_id, {"user_metadata": {"subscribed_locations": subscribed}})
-            return {"status": "success", "message": "Free trial activated successfully for location", "free_trial": True}
+                subs = user_meta.get("subscriptions", {})
+                import datetime
+                now = datetime.datetime.now()
+                months = 1 if req.plan_id == 'monthly' else (6 if req.plan_id == 'half_yearly' else 12)
+                expires_at = (now + datetime.timedelta(days=30*months)).isoformat()
+                
+                if req.location_id:
+                    subs[req.location_id] = {
+                        "plan_id": req.plan_id,
+                        "expires_at": expires_at,
+                        "status": "active"
+                    }
+                    
+                    supabase.auth.admin.update_user_by_id(
+                        req.user_id,
+                        {"user_metadata": {"subscriptions": subs}}
+                    )
+                return {"status": "success", "message": "Location subscription activated", "free_trial": True}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
             
@@ -99,6 +112,7 @@ class VerifyRequest(BaseModel):
     razorpay_signature: str
     user_id: str
     location_id: str = None
+    plan_id: str = None
 
 @app.post("/api/payment/verify")
 async def verify_payment(req: VerifyRequest):
@@ -119,12 +133,21 @@ async def verify_payment(req: VerifyRequest):
         # Fetch current metadata to append location
         user_data = supabase.auth.admin.get_user_by_id(req.user_id)
         user_meta = user_data.user.user_metadata if user_data.user else {}
-        subscribed = user_meta.get("subscribed_locations", [])
+        subs = user_meta.get("subscriptions", {})
         
-        if req.location_id and req.location_id not in subscribed:
-            subscribed.append(req.location_id)
+        if req.location_id and req.plan_id:
+            import datetime
+            now = datetime.datetime.now()
+            months = 1 if req.plan_id == 'monthly' else (6 if req.plan_id == 'half' else 12)
+            expires_at = (now + datetime.timedelta(days=30*months)).isoformat()
             
-        supabase.auth.admin.update_user_by_id(req.user_id, {"user_metadata": {"subscribed_locations": subscribed}})
+            subs[req.location_id] = {
+                "plan_id": req.plan_id,
+                "expires_at": expires_at,
+                "status": "active"
+            }
+            
+            supabase.auth.admin.update_user_by_id(req.user_id, {"user_metadata": {"subscriptions": subs}})
         
         return {"status": "success", "message": "Payment verified and subscription activated"}
     except razorpay.errors.SignatureVerificationError:
@@ -200,18 +223,20 @@ async def get_google_locations(req: GoogleSyncRequest):
         # 3. Check Subscriptions
         user_data = supabase.auth.admin.get_user_by_id(req.user_id)
         user_meta = user_data.user.user_metadata if user_data.user else {}
-        subscribed_locs = user_meta.get("subscribed_locations", [])
+        subs = user_meta.get("subscriptions", {})
         
         # 4. Format for dashboard
         dashboard_locations = []
         for loc in google_locations:
             loc_id = loc.get("name")
+            is_sub = loc_id in subs and subs[loc_id].get("status") == "active"
             dashboard_locations.append({
                 "id": loc_id, # e.g. "locations/12345"
                 "name": loc.get("title", "Unnamed Location"),
                 "reviews": 0, 
                 "rating": 0.0,
-                "subscribed": loc_id in subscribed_locs 
+                "subscribed": is_sub,
+                "plan_details": subs.get(loc_id, None)
             })
             
         return {
@@ -278,27 +303,66 @@ async def sync_and_reply_reviews(req: GoogleReviewRequest):
         replies_sent = 0
         
         for r in unreplied:
-            api_key = get_next_gemini_key()
-            if not api_key:
-                return {"status": "error", "message": "Gemini API keys not configured"}
+            try:
+                api_key = get_next_gemini_key()
+                if not api_key:
+                    return {"status": "error", "message": "Gemini API keys not configured on server"}
+                    
+                genai.configure(api_key=api_key)
+                gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+                prompt = f"Write a professional and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {r.get('starRating')}. Customer Comment: '{r.get('comment')}'. Do not include placeholders."
                 
-            genai.configure(api_key=api_key)
-            gemini_model = genai.GenerativeModel('gemini-1.5-flash')
-            prompt = f"Write a professional and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {r.get('starRating')}. Customer Comment: '{r.get('comment')}'. Do not include placeholders."
-            
-            ai_reply = gemini_model.generate_content(prompt).text
-            
-            # Post reply back to Google API
-            reply_url = f"https://mybusiness.googleapis.com/v4/{r.get('name')}/reply"
-            reply_resp = requests.put(reply_url, headers=headers, json={"comment": ai_reply})
-            
-            if reply_resp.ok:
-                replies_sent += 1
+                ai_reply = gemini_model.generate_content(prompt).text
+                
+                # Post reply back to Google API
+                reply_url = f"https://mybusiness.googleapis.com/v4/{r.get('name')}/reply"
+                reply_resp = requests.put(reply_url, headers=headers, json={"comment": ai_reply})
+                
+                if reply_resp.ok:
+                    replies_sent += 1
+                else:
+                    return {"status": "error", "message": f"Google refused reply: {reply_resp.text}"}
+            except Exception as inner_e:
+                return {"status": "error", "message": f"Gemini Error on review {r.get('name')}: {str(inner_e)}"}
                 
         return {
             "status": "success",
             "message": f"Successfully synced. AI sent {replies_sent} replies."
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class PublishPostRequest(BaseModel):
+    provider_token: str
+    location_id: str
+    summary: str
+    image_url: str = None
+
+@app.post("/api/google/publish-post")
+async def publish_local_post(req: PublishPostRequest):
+    try:
+        headers = {"Authorization": f"Bearer {req.provider_token}"}
+        # Uses mybusiness.googleapis.com/v4/accounts/{accountId}/locations/{locationId}/localPosts
+        url = f"https://mybusiness.googleapis.com/v4/{req.location_id}/localPosts"
+        
+        payload = {
+            "languageCode": "en-US",
+            "summary": req.summary,
+            "topicType": "STANDARD"
+        }
+        
+        if req.image_url:
+            payload["media"] = [{
+                "mediaFormat": "PHOTO",
+                "sourceUrl": req.image_url
+            }]
+            
+        resp = requests.post(url, headers=headers, json=payload)
+        
+        if not resp.ok:
+            return {"status": "error", "message": f"Google refused post: {resp.text}"}
+            
+        return {"status": "success", "post_data": resp.json()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
