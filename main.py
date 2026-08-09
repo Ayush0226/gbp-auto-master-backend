@@ -250,6 +250,43 @@ class GoogleSyncRequest(BaseModel):
     user_id: str
     provider_token: str = None
 
+from typing import List
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatContextRequest(BaseModel):
+    user_id: str
+    message: str
+    history: List[ChatMessage]
+    context_dump: str
+
+@app.post("/api/ai/chat")
+async def chat_with_assistant(req: ChatContextRequest):
+    try:
+        messages = [
+            {
+                "role": "system",
+                "content": f"You are a brilliant business consultant AI built into the 'GBP Auto Master' platform. Your job is to help the business owner analyze their Google Business Profile, summarize data, and give strategic advice. Keep your answers concise, actionable, and friendly.\n\nHere is the LIVE data context for the user's connected Google Business Profile right now:\n{req.context_dump}"
+            }
+        ]
+        
+        for msg in req.history:
+            messages.append({"role": msg.role, "content": msg.content})
+            
+        messages.append({"role": "user", "content": req.message})
+        
+        client = Groq(api_key=groq_api_key)
+        chat_completion = client.chat.completions.create(
+            messages=messages,
+            model="llama-3.1-8b-instant",
+        )
+        
+        return {"status": "success", "reply": chat_completion.choices[0].message.content}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/google/locations")
 async def get_google_locations(req: GoogleSyncRequest):
     """
