@@ -255,8 +255,19 @@ class GoogleReviewRequest(BaseModel):
 async def get_google_reviews(req: GoogleReviewRequest):
     try:
         headers = {"Authorization": f"Bearer {req.provider_token}"}
-        # The v4 API expects the full name like accounts/*/locations/*
-        url = f"https://mybusiness.googleapis.com/v4/{req.location_id}/reviews"
+        
+        # 1. Fetch account to construct full v4 path
+        acc_url = "https://mybusinessaccountmanagement.googleapis.com/v1/accounts"
+        acc_resp = requests.get(acc_url, headers=headers)
+        if not acc_resp.ok:
+            return {"status": "error", "message": f"Google Account Fetch Error: {acc_resp.text}"}
+        accounts = acc_resp.json().get('accounts', [])
+        if not accounts:
+            return {"status": "error", "message": "No Google Business Accounts found."}
+        account_name = accounts[0]['name']
+        full_location_path = f"{account_name}/{req.location_id}"
+        
+        url = f"https://mybusiness.googleapis.com/v4/{full_location_path}/reviews"
         resp = requests.get(url, headers=headers)
         
         if not resp.ok:
@@ -289,7 +300,18 @@ async def sync_and_reply_reviews(req: GoogleReviewRequest):
     """
     try:
         headers = {"Authorization": f"Bearer {req.provider_token}"}
-        url = f"https://mybusiness.googleapis.com/v4/{req.location_id}/reviews"
+        
+        acc_url = "https://mybusinessaccountmanagement.googleapis.com/v1/accounts"
+        acc_resp = requests.get(acc_url, headers=headers)
+        if not acc_resp.ok:
+            return {"status": "error", "message": f"Google Account Fetch Error: {acc_resp.text}"}
+        accounts = acc_resp.json().get('accounts', [])
+        if not accounts:
+            return {"status": "error", "message": "No Google Business Accounts found."}
+        account_name = accounts[0]['name']
+        full_location_path = f"{account_name}/{req.location_id}"
+        
+        url = f"https://mybusiness.googleapis.com/v4/{full_location_path}/reviews"
         resp = requests.get(url, headers=headers)
         
         if not resp.ok:
@@ -342,8 +364,19 @@ class PublishPostRequest(BaseModel):
 async def publish_local_post(req: PublishPostRequest):
     try:
         headers = {"Authorization": f"Bearer {req.provider_token}"}
+        
+        acc_url = "https://mybusinessaccountmanagement.googleapis.com/v1/accounts"
+        acc_resp = requests.get(acc_url, headers=headers)
+        if not acc_resp.ok:
+            return {"status": "error", "message": f"Google Account Fetch Error: {acc_resp.text}"}
+        accounts = acc_resp.json().get('accounts', [])
+        if not accounts:
+            return {"status": "error", "message": "No Google Business Accounts found."}
+        account_name = accounts[0]['name']
+        full_location_path = f"{account_name}/{req.location_id}"
+        
         # Uses mybusiness.googleapis.com/v4/accounts/{accountId}/locations/{locationId}/localPosts
-        url = f"https://mybusiness.googleapis.com/v4/{req.location_id}/localPosts"
+        url = f"https://mybusiness.googleapis.com/v4/{full_location_path}/localPosts"
         
         payload = {
             "languageCode": "en-US",
@@ -367,6 +400,42 @@ async def publish_local_post(req: PublishPostRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==========================================
+# ANALYTICS & SEO
+# ==========================================
+
+@app.post("/api/google/analytics")
+async def get_google_analytics(req: GoogleReviewRequest):
+    try:
+        headers = {"Authorization": f"Bearer {req.provider_token}"}
+        
+        # Performance API uses locations/12345 (NO account prefix)
+        url = f"https://businessprofileperformance.googleapis.com/v1/{req.location_id}:fetchMultiDailyMetricsTimeSeries"
+        
+        # Get metrics for the last 30 days
+        import datetime
+        end_date = datetime.datetime.now()
+        start_date = end_date - datetime.timedelta(days=30)
+        
+        params = {
+            "dailyMetrics": ["WEBSITE_CLICKS", "CALL_CLICKS", "BUSINESS_DIRECTION_REQUESTS", "BUSINESS_IMPRESSIONS_DESKTOP_MAPS", "BUSINESS_IMPRESSIONS_MOBILE_MAPS"],
+            "dailyRange.startDate.year": start_date.year,
+            "dailyRange.startDate.month": start_date.month,
+            "dailyRange.startDate.day": start_date.day,
+            "dailyRange.endDate.year": end_date.year,
+            "dailyRange.endDate.month": end_date.month,
+            "dailyRange.endDate.day": end_date.day,
+        }
+        
+        resp = requests.get(url, headers=headers, params=params)
+        
+        if not resp.ok:
+            return {"status": "error", "message": f"Analytics Fetch Error: {resp.text}"}
+            
+        return {"status": "success", "analytics": resp.json()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==========================================
 # CALENDAR: HYBRID STORAGE SCRUBBER
 # ==========================================
 from datetime import datetime, timedelta
@@ -377,43 +446,183 @@ async def scrub_calendar_images():
     CRON JOB ENDPOINT (Runs nightly at midnight)
     Finds all calendar posts that were successfully published yesterday (or older),
     deletes the heavy image file from Supabase Storage to save the 1GB free tier limit,
-    and updates the database row to image_url=null (leaving the text history intact).
+    but keeps the text caption in the database.
     """
-    if not supabase:
-        raise HTTPException(status_code=500, detail="Database not configured")
-        
     try:
-        # Calculate yesterday's date
-        yesterday = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
+        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
         
-        # 1. Find all published posts from yesterday or older that still have an image attached
-        response = supabase.table('calendar_posts').select('id, image_url').eq('status', 'published').lt('post_date', yesterday).not_.is_('image_url', 'null').execute()
-        
-        posts_to_scrub = response.data
-        if not posts_to_scrub:
-            return {"status": "success", "message": "No old images to scrub today.", "scrubbed_count": 0}
+        # 1. Fetch published posts older than today that still have images
+        posts = supabase.table('calendar_posts')\
+            .select('*')\
+            .eq('status', 'published')\
+            .lt('post_date', yesterday)\
+            .not_is('image_url', 'null')\
+            .execute()
             
-        scrubbed_count = 0
+        deleted_count = 0
         
-        for post in posts_to_scrub:
-            image_url = post['image_url']
-            # The image_url is usually a public URL. We need to extract the exact file path from it.
-            # Example: https://[project].supabase.co/storage/v1/object/public/calendar_images/user123/img.jpg
-            # We extract just the path after the bucket name: "user123/img.jpg"
-            if 'calendar_images/' in image_url:
-                file_path = image_url.split('calendar_images/')[-1]
+        for p in posts.data:
+            # image_url format: https://xyz.supabase.co/storage/v1/object/public/calendar_images/USER_ID/FILENAME.jpg
+            # Extract just the "USER_ID/FILENAME.jpg" part
+            if 'calendar_images/' in p['image_url']:
+                file_path = p['image_url'].split('calendar_images/')[1]
                 
-                # 2. Delete the heavy file from Supabase Storage
-                supabase.storage.from_('calendar_images').remove([file_path])
+                # Delete from storage
+                res = supabase.storage.from_('calendar_images').remove([file_path])
                 
-                # 3. Update the database row to remove the URL (the text caption stays!)
-                supabase.table('calendar_posts').update({'image_url': None}).eq('id', post['id']).execute()
-                
-                scrubbed_count += 1
-                
-        return {"status": "success", "message": f"Successfully scrubbed {scrubbed_count} old images to save storage space.", "scrubbed_count": scrubbed_count}
-        
+                # If deleted successfully, set image_url to null in db
+                if not getattr(res, 'error', None):
+                    supabase.table('calendar_posts').update({'image_url': None}).eq('id', p['id']).execute()
+                    deleted_count += 1
+                    
+        return {"status": "success", "message": f"Scrubbed {deleted_count} heavy images to save space."}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==========================================
+# OFFLINE AUTOMATION: GOOGLE OAUTH
+# ==========================================
+
+def get_offline_access_token(refresh_token: str) -> str:
+    client_id = os.getenv('GOOGLE_CLIENT_ID')
+    client_secret = os.getenv('GOOGLE_CLIENT_SECRET')
+    if not client_id or not client_secret:
+        raise Exception("GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET missing on server.")
+        
+    url = "https://oauth2.googleapis.com/token"
+    payload = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token"
+    }
+    resp = requests.post(url, data=payload)
+    if not resp.ok:
+        raise Exception(f"OAuth error: {resp.text}")
+    return resp.json().get('access_token')
+
+@app.get("/api/cron/publish-scheduled")
+async def publish_scheduled_posts():
+    """
+    Runs every morning. Finds today's scheduled posts, securely refreshes token, 
+    and publishes to Google.
+    """
+    try:
+        today = datetime.now().strftime('%Y-%m-%d')
+        posts = supabase.table('calendar_posts').select('*').eq('status', 'scheduled').lte('post_date', today).execute()
+        
+        published = 0
+        for post in posts.data:
+            user = supabase.auth.admin.get_user_by_id(post['user_id'])
+            refresh_token = user.user.user_metadata.get('google_refresh_token')
+            if not refresh_token:
+                continue
+                
+            try:
+                access_token = get_offline_access_token(refresh_token)
+                
+                # Re-use our existing logic
+                req = PublishPostRequest(
+                    provider_token=access_token,
+                    location_id=post['location_id'],
+                    summary=post.get('caption', ''),
+                    image_url=post.get('image_url')
+                )
+                res = await publish_local_post(req)
+                
+                if res.get('status') == 'success':
+                    supabase.table('calendar_posts').update({'status': 'published'}).eq('id', post['id']).execute()
+                    published += 1
+            except Exception as e:
+                print(f"Failed to auto-publish post {post['id']}: {e}")
+                
+        return {"status": "success", "published": published}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+import base64
+import json
+
+@app.post("/api/webhooks/google-reviews")
+async def google_reviews_webhook(req: Request):
+    """
+    Receives real-time push notifications from Google Cloud Pub/Sub
+    when a new review is posted.
+    """
+    try:
+        body = await req.json()
+        message = body.get('message', {})
+        data_b64 = message.get('data')
+        
+        if not data_b64:
+            return {"status": "ignored", "reason": "No data field"}
+            
+        decoded_bytes = base64.b64decode(data_b64)
+        payload = json.loads(decoded_bytes.decode('utf-8'))
+        
+        location_name = payload.get('locationName') # e.g. accounts/123/locations/456
+        review_name = payload.get('reviewName')
+        
+        if not location_name or not review_name:
+            return {"status": "ignored", "reason": "Missing location or review name"}
+            
+        # Extract just the "locations/456" part to match our DB
+        loc_id_short = "locations/" + location_name.split('locations/')[-1]
+        
+        # 1. Find the user who owns this location
+        users = supabase.auth.admin.list_users()
+        target_user = None
+        refresh_token = None
+        
+        for u in users:
+            meta = u.user_metadata or {}
+            subs = meta.get('subscriptions', {})
+            if loc_id_short in subs and subs[loc_id_short].get('status') == 'active':
+                target_user = u
+                refresh_token = meta.get('google_refresh_token')
+                break
+                
+        if not target_user or not refresh_token:
+            return {"status": "ignored", "reason": "Location not actively subscribed or missing token"}
+            
+        # 2. Get Access Token
+        access_token = get_offline_access_token(refresh_token)
+        headers = {"Authorization": f"Bearer {access_token}"}
+        
+        # 3. Fetch the exact review
+        rev_url = f"https://mybusiness.googleapis.com/v4/{review_name}"
+        rev_resp = requests.get(rev_url, headers=headers)
+        if not rev_resp.ok:
+            return {"status": "error", "reason": "Failed to fetch review"}
+            
+        review_data = rev_resp.json()
+        
+        # If already replied, skip
+        if 'reviewReply' in review_data:
+            return {"status": "ignored", "reason": "Already replied"}
+            
+        # 4. Generate AI Reply
+        api_key = get_next_gemini_key()
+        if not api_key:
+            return {"status": "error", "reason": "No Gemini API keys"}
+            
+        genai.configure(api_key=api_key)
+        gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+        prompt = f"Write a professional and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {review_data.get('starRating')}. Customer Comment: '{review_data.get('comment', '')}'. Do not include placeholders."
+        
+        ai_reply = gemini_model.generate_content(prompt).text
+        
+        # 5. Post Reply
+        reply_url = f"https://mybusiness.googleapis.com/v4/{review_name}/reply"
+        reply_resp = requests.put(reply_url, headers=headers, json={"comment": ai_reply})
+        
+        if reply_resp.ok:
+            return {"status": "success", "message": "Instantly replied to review!"}
+        else:
+            return {"status": "error", "reason": reply_resp.text}
+            
+    except Exception as e:
+        print(f"Webhook error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==========================================
