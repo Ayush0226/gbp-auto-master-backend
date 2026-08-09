@@ -161,8 +161,58 @@ async def get_razorpay_key():
 
 @app.get("/api/health")
 async def health_check():
-    # In the future, this endpoint will trigger the background review sync for all active users
     return {"status": "healthy", "service": "gbp-auto-master-backend"}
+
+@app.get("/api/cron/reply-reviews")
+async def cron_reply_reviews():
+    """
+    Background worker triggered by cron-job.org.
+    It loops through all users and locations, calling the sync logic.
+    """
+    try:
+        if not supabase:
+            return {"status": "error", "message": "Supabase not configured"}
+            
+        users = supabase.auth.admin.list_users()
+        total_replies = 0
+        
+        for u in users:
+            meta = u.user_metadata or {}
+            subs = meta.get('subscriptions', {})
+            refresh_token = meta.get('google_refresh_token')
+            
+            if not refresh_token:
+                continue
+                
+            try:
+                access_token = get_offline_access_token(refresh_token)
+            except Exception:
+                continue # Skip if token refresh fails
+                
+            for loc_id, sub_data in subs.items():
+                if sub_data.get('status') == 'active':
+                    # Extract the location ID part if it contains the full path
+                    clean_loc = loc_id.split('/')[-1] if '/' in loc_id else loc_id
+                    
+                    try:
+                        req = GoogleReviewRequest(
+                            user_id=u.id,
+                            provider_token=access_token,
+                            location_id=clean_loc
+                        )
+                        res = await sync_and_reply_reviews(req)
+                        if res.get('status') == 'success':
+                            # Assuming "AI sent X replies" is in the message
+                            import re
+                            match = re.search(r'sent (\d+) replies', res.get('message', ''))
+                            if match:
+                                total_replies += int(match.group(1))
+                    except Exception:
+                        pass # Continue to next location even if one fails
+                        
+        return {"status": "success", "message": f"Cron Job finished. Total automated replies sent: {total_replies}"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 # ==========================================
