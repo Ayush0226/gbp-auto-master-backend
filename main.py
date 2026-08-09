@@ -273,7 +273,8 @@ async def chat_with_assistant(req: ChatContextRequest):
         ]
         
         for msg in req.history:
-            messages.append({"role": msg.role, "content": msg.content})
+            mapped_role = "assistant" if msg.role == "ai" else msg.role
+            messages.append({"role": mapped_role, "content": msg.content})
             
         messages.append({"role": "user", "content": req.message})
         
