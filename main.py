@@ -331,7 +331,7 @@ async def sync_and_reply_reviews(req: GoogleReviewRequest):
                     return {"status": "error", "message": "Gemini API keys not configured on server"}
                     
                 genai.configure(api_key=api_key)
-                gemini_model = genai.GenerativeModel('gemini-1.5-flash-latest')
+                gemini_model = genai.GenerativeModel('gemini-pro')
                 prompt = f"Write a professional and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {r.get('starRating')}. Customer Comment: '{r.get('comment')}'. Do not include placeholders."
                 
                 ai_reply = gemini_model.generate_content(prompt).text
@@ -607,7 +607,7 @@ async def google_reviews_webhook(req: Request):
             return {"status": "error", "reason": "No Gemini API keys"}
             
         genai.configure(api_key=api_key)
-        gemini_model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        gemini_model = genai.GenerativeModel('gemini-pro')
         prompt = f"Write a professional and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {review_data.get('starRating')}. Customer Comment: '{review_data.get('comment', '')}'. Do not include placeholders."
         
         ai_reply = gemini_model.generate_content(prompt).text
