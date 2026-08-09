@@ -395,8 +395,9 @@ async def sync_and_reply_reviews(req: GoogleReviewRequest):
             
         reviews = resp.json().get('reviews', [])
         
-        # Find unreplied reviews
+        # Find unreplied reviews and STRICTLY limit to max 4 at a time
         unreplied = [r for r in reviews if 'reviewReply' not in r and r.get('comment')]
+        unreplied = unreplied[:4]
         
         # Fetch target keywords from Supabase
         target_keywords = []
@@ -505,6 +506,7 @@ async def publish_local_post(req: PublishPostRequest):
 # ==========================================
 # ANALYTICS & SEO
 # ==========================================
+import datetime
 
 @app.post("/api/google/analytics")
 async def get_google_analytics(req: GoogleReviewRequest):
@@ -515,7 +517,6 @@ async def get_google_analytics(req: GoogleReviewRequest):
         url = f"https://businessprofileperformance.googleapis.com/v1/{req.location_id}:fetchMultiDailyMetricsTimeSeries"
         
         # Get metrics for the last 30 days
-        import datetime
         end_date = datetime.datetime.now()
         start_date = end_date - datetime.timedelta(days=30)
         
