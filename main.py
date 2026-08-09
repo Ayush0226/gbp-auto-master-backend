@@ -220,36 +220,31 @@ async def cron_reply_reviews():
 # ==========================================
 
 import requests
-import google.generativeai as genai
+from groq import Groq
 import itertools
 
-# We initialize Gemini to support multiple rotating keys for the free tier
-gemini_keys_env = os.getenv('GEMINI_API_KEYS', '')
-gemini_keys = [k.strip() for k in gemini_keys_env.split(',')] if gemini_keys_env else []
-key_cycle = itertools.cycle(gemini_keys) if gemini_keys else None
-
-def get_next_gemini_key():
-    if not key_cycle:
-        return None
-    return next(key_cycle)
-
+# We use the user-provided Groq key securely from Environment Variables
+groq_api_key = os.getenv('GROQ_API_KEY', '')
 def generate_ai_reply(api_key: str, prompt: str) -> str:
-    genai.configure(api_key=api_key)
-    # We try every single model version from newest to oldest. 
-    # This guarantees we find one that is enabled and has quota on your specific API key!
-    models = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro', 'gemini-1.0-pro-latest', 'gemini-1.0-pro', 'gemini-2.0-flash']
-    last_error = ""
+    """
+    Generates a reply using Groq's Llama 3 model (100% free and lightning fast).
+    """
+    client = Groq(api_key=groq_api_key)
     
-    for model_name in models:
-        try:
-            gemini_model = genai.GenerativeModel(model_name)
-            return gemini_model.generate_content(prompt).text
-        except Exception as e:
-            last_error = str(e)
-            print(f"Model {model_name} failed: {last_error}")
-            continue
-            
-    raise Exception(f"All AI models failed or were denied quota. Last error: {last_error}")
+    chat_completion = client.chat.completions.create(
+        messages=[
+            {
+                "role": "system",
+                "content": "You are a professional customer service AI. Write extremely short (max 2 sentences) and polite replies to customer reviews."
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        model="llama3-8b-8192",
+    )
+    return chat_completion.choices[0].message.content
 
 class GoogleSyncRequest(BaseModel):
     user_id: str
@@ -394,13 +389,9 @@ async def sync_and_reply_reviews(req: GoogleReviewRequest):
         
         for r in unreplied:
             try:
-                api_key = get_next_gemini_key()
-                if not api_key:
-                    return {"status": "error", "message": "Gemini API keys not configured on server"}
-                    
                 prompt = f"Write a professional and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {r.get('starRating')}. Customer Comment: '{r.get('comment')}'. Do not include placeholders."
                 
-                ai_reply = generate_ai_reply(api_key, prompt)
+                ai_reply = generate_ai_reply("dummy_param", prompt)
                 
                 # Post reply back to Google API
                 reply_url = f"https://mybusiness.googleapis.com/v4/{r.get('name')}/reply"
@@ -668,13 +659,9 @@ async def google_reviews_webhook(req: Request):
             return {"status": "ignored", "reason": "Already replied"}
             
         # 4. Generate AI Reply
-        api_key = get_next_gemini_key()
-        if not api_key:
-            return {"status": "error", "reason": "No Gemini API keys"}
-            
         prompt = f"Write a professional and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {review_data.get('starRating')}. Customer Comment: '{review_data.get('comment', '')}'. Do not include placeholders."
         
-        ai_reply = generate_ai_reply(api_key, prompt)
+        ai_reply = generate_ai_reply("dummy_param", prompt)
         
         # 5. Post Reply
         reply_url = f"https://mybusiness.googleapis.com/v4/{review_name}/reply"
