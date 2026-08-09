@@ -540,7 +540,7 @@ async def get_google_analytics(req: GoogleReviewRequest):
 
 
 @app.post("/api/google/search-keywords")
-async def get_google_search_keywords(req: GoogleAnalyticsRequest):
+async def get_google_search_keywords(req: GoogleReviewRequest):
     try:
         headers = {"Authorization": f"Bearer {req.provider_token}"}
         
