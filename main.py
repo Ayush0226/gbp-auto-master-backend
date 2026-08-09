@@ -42,6 +42,7 @@ class OrderRequest(BaseModel):
     plan_id: str
     promo_code: str
     user_id: str # Supabase User ID
+    location_id: str = None
 
 @app.post("/api/payment/create-order")
 async def create_order(req: OrderRequest):
@@ -61,9 +62,16 @@ async def create_order(req: OrderRequest):
         if not supabase:
             raise HTTPException(status_code=500, detail="Supabase not configured")
         try:
-            # Updating user metadata using admin role to bypass security policies
-            supabase.auth.admin.update_user_by_id(req.user_id, {"user_metadata": {"subscription_status": "active"}})
-            return {"status": "success", "message": "Free trial activated successfully", "free_trial": True}
+            # Fetch current metadata to append location
+            user_data = supabase.auth.admin.get_user_by_id(req.user_id)
+            user_meta = user_data.user.user_metadata if user_data.user else {}
+            subscribed = user_meta.get("subscribed_locations", [])
+            
+            if req.location_id and req.location_id not in subscribed:
+                subscribed.append(req.location_id)
+                
+            supabase.auth.admin.update_user_by_id(req.user_id, {"user_metadata": {"subscribed_locations": subscribed}})
+            return {"status": "success", "message": "Free trial activated successfully for location", "free_trial": True}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
             
@@ -74,7 +82,8 @@ async def create_order(req: OrderRequest):
         "receipt": f"receipt_{req.user_id[:8]}",
         "notes": {
             "plan_id": req.plan_id,
-            "user_id": req.user_id
+            "user_id": req.user_id,
+            "location_id": req.location_id
         }
     }
     
@@ -89,6 +98,7 @@ class VerifyRequest(BaseModel):
     razorpay_order_id: str
     razorpay_signature: str
     user_id: str
+    location_id: str = None
 
 @app.post("/api/payment/verify")
 async def verify_payment(req: VerifyRequest):
@@ -106,7 +116,15 @@ async def verify_payment(req: VerifyRequest):
         if not supabase:
             raise HTTPException(status_code=500, detail="Supabase not configured")
             
-        supabase.auth.admin.update_user_by_id(req.user_id, {"user_metadata": {"subscription_status": "active"}})
+        # Fetch current metadata to append location
+        user_data = supabase.auth.admin.get_user_by_id(req.user_id)
+        user_meta = user_data.user.user_metadata if user_data.user else {}
+        subscribed = user_meta.get("subscribed_locations", [])
+        
+        if req.location_id and req.location_id not in subscribed:
+            subscribed.append(req.location_id)
+            
+        supabase.auth.admin.update_user_by_id(req.user_id, {"user_metadata": {"subscribed_locations": subscribed}})
         
         return {"status": "success", "message": "Payment verified and subscription activated"}
     except razorpay.errors.SignatureVerificationError:
@@ -179,15 +197,21 @@ async def get_google_locations(req: GoogleSyncRequest):
             
         google_locations = loc_resp.json().get('locations', [])
         
-        # 3. Format for dashboard
+        # 3. Check Subscriptions
+        user_data = supabase.auth.admin.get_user_by_id(req.user_id)
+        user_meta = user_data.user.user_metadata if user_data.user else {}
+        subscribed_locs = user_meta.get("subscribed_locations", [])
+        
+        # 4. Format for dashboard
         dashboard_locations = []
         for loc in google_locations:
+            loc_id = loc.get("name")
             dashboard_locations.append({
-                "id": loc.get("name"), # e.g. "locations/12345"
+                "id": loc_id, # e.g. "locations/12345"
                 "name": loc.get("title", "Unnamed Location"),
                 "reviews": 0, 
                 "rating": 0.0,
-                "subscribed": False 
+                "subscribed": loc_id in subscribed_locs 
             })
             
         return {
