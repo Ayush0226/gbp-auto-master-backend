@@ -416,6 +416,7 @@ class PublishPostRequest(BaseModel):
     location_id: str
     summary: str
     image_url: str = None
+    post_type: str = "LOCAL_POST"
 
 @app.post("/api/google/publish-post")
 async def publish_local_post(req: PublishPostRequest):
@@ -432,22 +433,39 @@ async def publish_local_post(req: PublishPostRequest):
         account_name = accounts[0]['name']
         full_location_path = f"{account_name}/{req.location_id}"
         
-        # Uses mybusiness.googleapis.com/v4/accounts/{accountId}/locations/{locationId}/localPosts
-        url = f"https://mybusiness.googleapis.com/v4/{full_location_path}/localPosts"
-        
-        payload = {
-            "languageCode": "en-US",
-            "summary": req.summary,
-            "topicType": "STANDARD"
-        }
-        
-        if req.image_url:
-            payload["media"] = [{
-                "mediaFormat": "PHOTO",
-                "sourceUrl": req.image_url
-            }]
+        if req.post_type == "LOCAL_POST":
+            # Uses mybusiness.googleapis.com/v4/accounts/{accountId}/locations/{locationId}/localPosts
+            url = f"https://mybusiness.googleapis.com/v4/{full_location_path}/localPosts"
             
-        resp = requests.post(url, headers=headers, json=payload)
+            payload = {
+                "languageCode": "en-US",
+                "summary": req.summary,
+                "topicType": "STANDARD"
+            }
+            
+            if req.image_url:
+                payload["media"] = [{
+                    "mediaFormat": "PHOTO",
+                    "sourceUrl": req.image_url
+                }]
+                
+            resp = requests.post(url, headers=headers, json=payload)
+        else:
+            # Uses mybusiness.googleapis.com/v4/accounts/{accountId}/locations/{locationId}/media
+            url = f"https://mybusiness.googleapis.com/v4/{full_location_path}/media"
+            
+            payload = {
+                "mediaFormat": req.post_type,
+                "locationAssociation": {
+                    "category": "ADDITIONAL"
+                },
+                "sourceUrl": req.image_url
+            }
+            
+            if req.summary:
+                payload["description"] = req.summary
+                
+            resp = requests.post(url, headers=headers, json=payload)
         
         if not resp.ok:
             return {"status": "error", "message": f"Google refused post: {resp.text}"}
@@ -583,7 +601,8 @@ async def publish_scheduled_posts():
                     provider_token=access_token,
                     location_id=post['location_id'],
                     summary=post.get('caption', ''),
-                    image_url=post.get('image_url')
+                    image_url=post.get('image_url'),
+                    post_type=post.get('post_type', 'LOCAL_POST')
                 )
                 res = await publish_local_post(req)
                 
