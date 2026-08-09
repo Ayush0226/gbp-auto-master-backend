@@ -337,11 +337,17 @@ async def get_google_reviews(req: GoogleReviewRequest):
             # If Google API fails (e.g. they don't have access or billing is disabled for reviews API)
             return {"status": "error", "message": resp.text}
             
-        data = resp.json().get('reviews', [])
+        json_resp = resp.json()
+        data = json_resp.get("reviews", [])
+        total_review_count = json_resp.get("totalReviewCount", len(data))
+        average_rating = json_resp.get("averageRating", 0.0)
         
+        recent_answered = sum(1 for r in data if "reviewReply" in r)
+        total_fetched = len(data)
+
         # Format the reviews for the frontend
         formatted_reviews = []
-        for r in data[:10]: # Return top 10
+        for r in data:
             formatted_reviews.append({
                 "id": r.get('name'),
                 "reviewer": r.get('reviewer', {}).get('displayName', 'Anonymous'),
@@ -351,7 +357,14 @@ async def get_google_reviews(req: GoogleReviewRequest):
                 "has_reply": 'reviewReply' in r
             })
             
-        return {"status": "success", "reviews": formatted_reviews}
+        return {
+            "status": "success", 
+            "reviews": formatted_reviews,
+            "totalReviewCount": total_review_count,
+            "averageRating": average_rating,
+            "recentAnswered": recent_answered,
+            "totalFetched": total_fetched
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -385,11 +398,26 @@ async def sync_and_reply_reviews(req: GoogleReviewRequest):
         # Find unreplied reviews
         unreplied = [r for r in reviews if 'reviewReply' not in r and r.get('comment')]
         
+        # Fetch target keywords from Supabase
+        target_keywords = []
+        if supabase:
+            try:
+                user_settings = supabase.table('user_settings').select('active_keywords').eq('user_id', req.user_id).execute()
+                if user_settings.data and user_settings.data[0].get('active_keywords'):
+                    target_keywords = user_settings.data[0].get('active_keywords')
+            except Exception as e:
+                print("Error fetching keywords from Supabase:", e)
+                
+        keyword_instruction = ""
+        if target_keywords:
+            keyword_list = ", ".join([f'"{k}"' for k in target_keywords])
+            keyword_instruction = f"IMPORTANT: Organically and naturally inject one of these SEO keywords into the reply: {keyword_list}. Do NOT sound like a robot."
+        
         replies_sent = 0
         
         for r in unreplied:
             try:
-                prompt = f"Write a professional and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {r.get('starRating')}. Customer Comment: '{r.get('comment')}'. Do not include placeholders."
+                prompt = f"Write a professional and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {r.get('starRating')}. Customer Comment: '{r.get('comment')}'. {keyword_instruction} Do not include placeholders."
                 
                 ai_reply = generate_ai_reply("dummy_param", prompt)
                 
@@ -492,7 +520,7 @@ async def get_google_analytics(req: GoogleReviewRequest):
         start_date = end_date - datetime.timedelta(days=30)
         
         params = {
-            "dailyMetrics": ["WEBSITE_CLICKS", "CALL_CLICKS", "BUSINESS_DIRECTION_REQUESTS", "BUSINESS_IMPRESSIONS_DESKTOP_MAPS", "BUSINESS_IMPRESSIONS_MOBILE_MAPS"],
+            "dailyMetrics": ["WEBSITE_CLICKS", "CALL_CLICKS", "BUSINESS_DIRECTION_REQUESTS", "BUSINESS_IMPRESSIONS_DESKTOP_MAPS", "BUSINESS_IMPRESSIONS_MOBILE_MAPS", "BUSINESS_IMPRESSIONS_DESKTOP_SEARCH", "BUSINESS_IMPRESSIONS_MOBILE_SEARCH", "BUSINESS_CONVERSATIONS", "BUSINESS_BOOKINGS", "FOOD_ORDERS"],
             "dailyRange.startDate.year": start_date.year,
             "dailyRange.startDate.month": start_date.month,
             "dailyRange.startDate.day": start_date.day,
@@ -507,6 +535,34 @@ async def get_google_analytics(req: GoogleReviewRequest):
             return {"status": "error", "message": f"Analytics Fetch Error: {resp.text}"}
             
         return {"status": "success", "analytics": resp.json()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/google/search-keywords")
+async def get_google_search_keywords(req: GoogleAnalyticsRequest):
+    try:
+        headers = {"Authorization": f"Bearer {req.provider_token}"}
+        
+        # We need the last fully completed month or current month
+        end_date = datetime.datetime.utcnow()
+        start_date = end_date - datetime.timedelta(days=30)
+        
+        params = {
+            "monthlyRange.startMonth.year": start_date.year,
+            "monthlyRange.startMonth.month": start_date.month,
+            "monthlyRange.endMonth.year": end_date.year,
+            "monthlyRange.endMonth.month": end_date.month,
+            "pageSize": 10
+        }
+        
+        url = f"https://businessprofileperformance.googleapis.com/v1/{req.location_id}/searchkeywords/impressions/monthly"
+        resp = requests.get(url, headers=headers, params=params)
+        
+        if not resp.ok:
+            return {"status": "error", "message": resp.text}
+            
+        return {"status": "success", "keywords": resp.json().get("searchKeywordsMonthlyImpressions", [])}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -677,8 +733,23 @@ async def google_reviews_webhook(req: Request):
         if 'reviewReply' in review_data:
             return {"status": "ignored", "reason": "Already replied"}
             
+        # Fetch target keywords from Supabase
+        target_keywords = []
+        if supabase and target_user:
+            try:
+                user_settings = supabase.table('user_settings').select('active_keywords').eq('user_id', target_user.id).execute()
+                if user_settings.data and user_settings.data[0].get('active_keywords'):
+                    target_keywords = user_settings.data[0].get('active_keywords')
+            except Exception as e:
+                print("Error fetching keywords from Supabase:", e)
+                
+        keyword_instruction = ""
+        if target_keywords:
+            keyword_list = ", ".join([f'"{k}"' for k in target_keywords])
+            keyword_instruction = f"IMPORTANT: Organically and naturally inject one of these SEO keywords into the reply: {keyword_list}. Do NOT sound like a robot."
+            
         # 4. Generate AI Reply
-        prompt = f"Write a professional and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {review_data.get('starRating')}. Customer Comment: '{review_data.get('comment', '')}'. Do not include placeholders."
+        prompt = f"Write a professional and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {review_data.get('starRating')}. Customer Comment: '{review_data.get('comment', '')}'. {keyword_instruction} Do not include placeholders."
         
         ai_reply = generate_ai_reply("dummy_param", prompt)
         
