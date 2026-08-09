@@ -197,30 +197,86 @@ async def get_google_locations(req: GoogleSyncRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+class GoogleReviewRequest(BaseModel):
+    user_id: str
+    provider_token: str
+    location_id: str
+
+@app.post("/api/google/get-reviews")
+async def get_google_reviews(req: GoogleReviewRequest):
+    try:
+        headers = {"Authorization": f"Bearer {req.provider_token}"}
+        # The v4 API expects the full name like accounts/*/locations/*
+        url = f"https://mybusiness.googleapis.com/v4/{req.location_id}/reviews"
+        resp = requests.get(url, headers=headers)
+        
+        if not resp.ok:
+            # If Google API fails (e.g. they don't have access or billing is disabled for reviews API)
+            return {"status": "error", "message": resp.text}
+            
+        data = resp.json().get('reviews', [])
+        
+        # Format the reviews for the frontend
+        formatted_reviews = []
+        for r in data[:10]: # Return top 10
+            formatted_reviews.append({
+                "id": r.get('name'),
+                "reviewer": r.get('reviewer', {}).get('displayName', 'Anonymous'),
+                "rating": r.get('starRating', 'FIVE'),
+                "comment": r.get('comment', ''),
+                "createTime": r.get('createTime', ''),
+                "has_reply": 'reviewReply' in r
+            })
+            
+        return {"status": "success", "reviews": formatted_reviews}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/google/sync-reviews")
-async def sync_and_reply_reviews(req: GoogleSyncRequest):
+async def sync_and_reply_reviews(req: GoogleReviewRequest):
     """
     Fetches unreplied reviews, uses Gemini to generate SEO-optimized replies, 
     and posts them back to Google.
     """
-    # 1. Verify user subscription status
-    # 2. Fetch unreplied reviews via Google API
-    
-    # 3. Use Gemini to generate reply using key rotation:
-    # api_key = get_next_gemini_key()
-    # if not api_key:
-    #     raise HTTPException(status_code=500, detail="Gemini API keys not configured")
-    # genai.configure(api_key=api_key)
-    # gemini_model = genai.GenerativeModel('gemini-1.5-flash')
-    # prompt = "Write a professional reply to this 5-star review. Mention 'emergency plumber'."
-    # ai_reply = gemini_model.generate_content(prompt)
-    
-    # 4. Post reply back to Google API
-    
-    return {
-        "status": "pending_setup",
-        "message": "Gemini AI Engine (with key rotation) is standing by. Waiting for Google API approval."
-    }
+    try:
+        headers = {"Authorization": f"Bearer {req.provider_token}"}
+        url = f"https://mybusiness.googleapis.com/v4/{req.location_id}/reviews"
+        resp = requests.get(url, headers=headers)
+        
+        if not resp.ok:
+            return {"status": "error", "message": resp.text}
+            
+        reviews = resp.json().get('reviews', [])
+        
+        # Find unreplied reviews
+        unreplied = [r for r in reviews if 'reviewReply' not in r and r.get('comment')]
+        
+        replies_sent = 0
+        
+        for r in unreplied:
+            api_key = get_next_gemini_key()
+            if not api_key:
+                return {"status": "error", "message": "Gemini API keys not configured"}
+                
+            genai.configure(api_key=api_key)
+            gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+            prompt = f"Write a professional and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {r.get('starRating')}. Customer Comment: '{r.get('comment')}'. Do not include placeholders."
+            
+            ai_reply = gemini_model.generate_content(prompt).text
+            
+            # Post reply back to Google API
+            reply_url = f"https://mybusiness.googleapis.com/v4/{r.get('name')}/reply"
+            reply_resp = requests.put(reply_url, headers=headers, json={"comment": ai_reply})
+            
+            if reply_resp.ok:
+                replies_sent += 1
+                
+        return {
+            "status": "success",
+            "message": f"Successfully synced. AI sent {replies_sent} replies."
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ==========================================
 # CALENDAR: HYBRID STORAGE SCRUBBER
