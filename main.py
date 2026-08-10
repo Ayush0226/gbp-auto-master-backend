@@ -434,7 +434,7 @@ async def sync_and_reply_reviews(req: GoogleReviewRequest):
         reviews = resp.json().get('reviews', [])
         
         # Find unreplied reviews and STRICTLY limit to max 4 at a time
-        unreplied = [r for r in reviews if 'reviewReply' not in r and r.get('comment')]
+        unreplied = [r for r in reviews if 'reviewReply' not in r]
         unreplied = unreplied[:4]
         
         # Fetch target keywords from Supabase
@@ -456,7 +456,11 @@ async def sync_and_reply_reviews(req: GoogleReviewRequest):
         
         for r in unreplied:
             try:
-                prompt = f"Write a professional and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {r.get('starRating')}. Customer Comment: '{r.get('comment')}'. {keyword_instruction} Do not include placeholders."
+                customer_comment = r.get('comment', '').strip()
+                if not customer_comment:
+                    customer_comment = "[No text provided, just a star rating]"
+                    
+                prompt = f"Write a professional and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {r.get('starRating')}. Customer Comment: '{customer_comment}'. {keyword_instruction} Do not include placeholders."
                 
                 ai_reply = generate_ai_reply("dummy_param", prompt)
                 
