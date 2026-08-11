@@ -556,7 +556,11 @@ async def get_google_analytics(req: GoogleReviewRequest):
         headers = {"Authorization": f"Bearer {req.provider_token}"}
         
         # Performance API uses locations/12345 (NO account prefix)
-        url = f"https://businessprofileperformance.googleapis.com/v1/{req.location_id}:fetchMultiDailyMetricsTimeSeries"
+        clean_loc = req.location_id
+        if "locations/" in clean_loc:
+            clean_loc = "locations/" + clean_loc.split("locations/")[-1]
+            
+        url = f"https://businessprofileperformance.googleapis.com/v1/{clean_loc}:fetchMultiDailyMetricsTimeSeries"
         
         # Get metrics for the last 30 days
         end_date = datetime.datetime.now()
@@ -599,7 +603,11 @@ async def get_google_search_keywords(req: GoogleReviewRequest):
             "pageSize": 10
         }
         
-        url = f"https://businessprofileperformance.googleapis.com/v1/{req.location_id}/searchkeywords/impressions/monthly"
+        clean_loc = req.location_id
+        if "locations/" in clean_loc:
+            clean_loc = "locations/" + clean_loc.split("locations/")[-1]
+            
+        url = f"https://businessprofileperformance.googleapis.com/v1/{clean_loc}/searchkeywords/impressions/monthly"
         resp = requests.get(url, headers=headers, params=params)
         
         if not resp.ok:
