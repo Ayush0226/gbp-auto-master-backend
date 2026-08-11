@@ -583,7 +583,9 @@ async def get_google_analytics(req: GoogleReviewRequest):
             
         return {"status": "success", "analytics": resp.json()}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_details = traceback.format_exc()
+        return {"status": "error", "message": f"Backend Crash: {str(e)} | Trace: {error_details}"}
 
 
 @app.post("/api/google/search-keywords")
@@ -615,7 +617,9 @@ async def get_google_search_keywords(req: GoogleReviewRequest):
             
         return {"status": "success", "keywords": resp.json().get("searchKeywordsMonthlyImpressions", [])}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_details = traceback.format_exc()
+        return {"status": "error", "message": f"Backend Crash: {str(e)} | Trace: {error_details}"}
 
 # ==========================================
 # CALENDAR: HYBRID STORAGE SCRUBBER
