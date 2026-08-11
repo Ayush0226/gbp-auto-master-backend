@@ -563,8 +563,9 @@ async def get_google_analytics(req: GoogleReviewRequest):
         url = f"https://businessprofileperformance.googleapis.com/v1/{clean_loc}:fetchMultiDailyMetricsTimeSeries"
         
         # Get metrics for the last 30 days
-        end_date = datetime.datetime.now()
-        start_date = end_date - datetime.timedelta(days=30)
+        import datetime as dt
+        end_date = dt.datetime.now()
+        start_date = end_date - dt.timedelta(days=30)
         
         params = {
             "dailyMetrics": ["WEBSITE_CLICKS", "CALL_CLICKS", "BUSINESS_DIRECTION_REQUESTS", "BUSINESS_IMPRESSIONS_DESKTOP_MAPS", "BUSINESS_IMPRESSIONS_MOBILE_MAPS", "BUSINESS_IMPRESSIONS_DESKTOP_SEARCH", "BUSINESS_IMPRESSIONS_MOBILE_SEARCH", "BUSINESS_CONVERSATIONS", "BUSINESS_BOOKINGS", "FOOD_ORDERS"],
@@ -594,8 +595,9 @@ async def get_google_search_keywords(req: GoogleReviewRequest):
         headers = {"Authorization": f"Bearer {req.provider_token}"}
         
         # We need the last fully completed month or current month
-        end_date = datetime.datetime.utcnow()
-        start_date = end_date - datetime.timedelta(days=30)
+        import datetime as dt
+        end_date = dt.datetime.utcnow()
+        start_date = end_date - dt.timedelta(days=30)
         
         params = {
             "monthlyRange.startMonth.year": start_date.year,
