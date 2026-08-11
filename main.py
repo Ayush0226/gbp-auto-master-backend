@@ -33,9 +33,9 @@ else:
     supabase = None
 
 PRICING_PLANS = {
-    'monthly': {'original': 360, 'discounted': 289},
-    'half_yearly': {'original': 2160, 'discounted': 1649},
-    'yearly': {'original': 4380, 'discounted': 3149}
+    'monthly': {'original': 2999, 'discounted': 1999},
+    'half_yearly': {'original': 14999, 'discounted': 12999},
+    'yearly': {'original': 24999, 'discounted': 19999}
 }
 
 class OrderRequest(BaseModel):
@@ -68,10 +68,10 @@ async def create_order(req: OrderRequest):
                 user_meta = user_data.user.user_metadata if user_data.user else {}
                 
                 subs = user_meta.get("subscriptions", {})
-                import datetime
-                now = datetime.datetime.now()
+                import datetime as dt
+                now = dt.datetime.now()
                 months = 1 if req.plan_id == 'monthly' else (6 if req.plan_id == 'half_yearly' else 12)
-                expires_at = (now + datetime.timedelta(days=30*months)).isoformat()
+                expires_at = (now + dt.timedelta(days=30*months)).isoformat()
                 
                 if req.location_id:
                     subs[req.location_id] = {
@@ -136,10 +136,10 @@ async def verify_payment(req: VerifyRequest):
         subs = user_meta.get("subscriptions", {})
         
         if req.location_id and req.plan_id:
-            import datetime
-            now = datetime.datetime.now()
+            import datetime as dt
+            now = dt.datetime.now()
             months = 1 if req.plan_id == 'monthly' else (6 if req.plan_id == 'half' else 12)
-            expires_at = (now + datetime.timedelta(days=30*months)).isoformat()
+            expires_at = (now + dt.timedelta(days=30*months)).isoformat()
             
             subs[req.location_id] = {
                 "plan_id": req.plan_id,
