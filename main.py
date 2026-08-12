@@ -437,30 +437,43 @@ async def sync_and_reply_reviews(req: GoogleReviewRequest):
         unreplied = [r for r in reviews if 'reviewReply' not in r]
         unreplied = unreplied[:4]
         
-        # Fetch target keywords from Supabase
+        # Fetch user_settings from Supabase
         target_keywords = []
+        ai_settings = {}
         if supabase:
             try:
-                user_settings = supabase.table('user_settings').select('active_keywords').eq('user_id', req.user_id).execute()
-                if user_settings.data and user_settings.data[0].get('active_keywords'):
-                    target_keywords = user_settings.data[0].get('active_keywords')
+                user_settings = supabase.table('user_settings').select('*').eq('user_id', req.user_id).execute()
+                if user_settings.data:
+                    ai_settings = user_settings.data[0]
+                    target_keywords = ai_settings.get('active_keywords', [])
             except Exception as e:
-                print("Error fetching keywords from Supabase:", e)
+                print("Error fetching settings from Supabase:", e)
+                
+        if ai_settings and not ai_settings.get('is_ai_active', True):
+            return {"status": "success", "message": "AI Autopilot is currently turned off in settings."}
                 
         keyword_instruction = ""
         if target_keywords:
             keyword_list = ", ".join([f'"{k}"' for k in target_keywords])
             keyword_instruction = f"IMPORTANT: Organically and naturally inject one of these SEO keywords into the reply: {keyword_list}. Do NOT sound like a robot."
+            
+        ai_tone = ai_settings.get('ai_tone', 'Professional') if ai_settings else 'Professional'
+        custom_instructions = ai_settings.get('custom_instructions', '') if ai_settings else ''
+        custom_instruction_text = f"Additional custom instructions from the business owner: {custom_instructions}" if custom_instructions else ""
         
         replies_sent = 0
         
         for r in unreplied:
             try:
+                rating = r.get('starRating', '')
+                if rating in ['ONE', 'TWO'] and ai_settings and not ai_settings.get('reply_to_1_star', False):
+                    continue # Skip negative reviews if user disabled it
+                    
                 customer_comment = r.get('comment', '').strip()
                 if not customer_comment:
                     customer_comment = "[No text provided, just a star rating]"
                     
-                prompt = f"Write a professional and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {r.get('starRating')}. Customer Comment: '{customer_comment}'. {keyword_instruction} Do not include placeholders."
+                prompt = f"Write a {ai_tone.lower()} and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {rating}. Customer Comment: '{customer_comment}'. {keyword_instruction} {custom_instruction_text} Do not include placeholders."
                 
                 ai_reply = generate_ai_reply("dummy_param", prompt)
                 
