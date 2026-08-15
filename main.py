@@ -155,6 +155,35 @@ async def verify_payment(req: VerifyRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
         
+class CancelSubscriptionRequest(BaseModel):
+    user_id: str
+    location_id: str
+
+@app.post("/api/billing/cancel")
+async def cancel_subscription(req: CancelSubscriptionRequest):
+    try:
+        if not supabase:
+            raise HTTPException(status_code=500, detail="Supabase not configured")
+            
+        user_data = supabase.auth.admin.get_user_by_id(req.user_id)
+        if not user_data.user:
+            raise HTTPException(status_code=404, detail="User not found")
+            
+        user_meta = user_data.user.user_metadata or {}
+        subs = user_meta.get("subscriptions", {})
+        
+        if req.location_id in subs:
+            subs[req.location_id]['auto_renew'] = False
+            supabase.auth.admin.update_user_by_id(
+                req.user_id,
+                {"user_metadata": {"subscriptions": subs}}
+            )
+            return {"status": "success", "message": "Subscription cancelled. It will remain active until the end of the current billing cycle."}
+        else:
+            raise HTTPException(status_code=404, detail="Subscription not found for this location")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/payment/key")
 async def get_razorpay_key():
     return {"key": os.getenv("RAZORPAY_KEY_ID", "")}
