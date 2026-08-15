@@ -702,6 +702,32 @@ def get_offline_access_token(refresh_token: str) -> str:
         raise Exception(f"OAuth error: {resp.text}")
     return resp.json().get('access_token')
 
+class RefreshTokenRequest(BaseModel):
+    user_id: str
+
+@app.post("/api/auth/refresh-google-token")
+async def api_refresh_google_token(req: RefreshTokenRequest):
+    """
+    Called by the frontend Dashboard when the 1-hour Google token expires.
+    Fetches the permanent refresh token from Supabase and returns a fresh access token.
+    """
+    try:
+        if not supabase:
+            return {"status": "error", "message": "Supabase not configured"}
+            
+        user_data = supabase.auth.admin.get_user_by_id(req.user_id)
+        if not user_data.user:
+            return {"status": "error", "message": "User not found"}
+            
+        refresh_token = user_data.user.user_metadata.get('google_refresh_token')
+        if not refresh_token:
+            return {"status": "error", "message": "No refresh token found for this user"}
+            
+        new_access_token = get_offline_access_token(refresh_token)
+        return {"status": "success", "provider_token": new_access_token}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.get("/api/cron/publish-scheduled")
 async def publish_scheduled_posts():
     """
