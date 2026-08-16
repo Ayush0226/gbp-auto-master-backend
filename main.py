@@ -33,7 +33,6 @@ else:
     supabase = None
 
 PRICING_PLANS = {
-    'monthly': {'original': 499, 'discounted': 399},
     'half_yearly': {'original': 2999, 'discounted': 1999},
     'yearly': {'original': 5499, 'discounted': 3999}
 }
