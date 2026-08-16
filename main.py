@@ -33,9 +33,9 @@ else:
     supabase = None
 
 PRICING_PLANS = {
-    'monthly': {'original': 2999, 'discounted': 1999},
-    'half_yearly': {'original': 14999, 'discounted': 12999},
-    'yearly': {'original': 24999, 'discounted': 19999}
+    'monthly': {'original': 499, 'discounted': 399},
+    'half_yearly': {'original': 2999, 'discounted': 1999},
+    'yearly': {'original': 5499, 'discounted': 3999}
 }
 
 class OrderRequest(BaseModel):
@@ -50,11 +50,9 @@ async def create_order(req: OrderRequest):
         raise HTTPException(status_code=400, detail="Invalid plan selected")
         
     base_price = PRICING_PLANS[req.plan_id]['original']
-    final_price = base_price
+    final_price = PRICING_PLANS[req.plan_id]['discounted'] # Default to discounted for first-time users
     
-    if req.promo_code == 'FIRSTUNDER10':
-        final_price = PRICING_PLANS[req.plan_id]['discounted']
-    elif req.promo_code == 'ATYAUNSUHJ':
+    if req.promo_code == 'ATYAUNSUHJ':
         final_price = 0
         
     if final_price == 0:
