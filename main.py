@@ -605,17 +605,19 @@ async def register_google_webhook(req: GoogleReviewRequest):
         account_name = accounts[0]['name']
         
         # Tell Google to send notifications to our topic
-        notif_url = f"https://mybusiness.googleapis.com/v4/{account_name}/notifications"
+        notif_url = f"https://mybusinessnotifications.googleapis.com/v1/{account_name}/notificationSetting"
         payload = {
             "pubsubTopic": "projects/steady-ether-500708-n8/topics/gbp-reviews-topic",
             "notificationTypes": ["NEW_REVIEW", "UPDATED_REVIEW"]
         }
-        resp = requests.put(notif_url, headers=headers, json=payload)
+        
+        # We need to specify updateMask for PATCH requests in Google APIs
+        resp = requests.patch(notif_url, headers=headers, json=payload, params={"updateMask": "pubsubTopic,notificationTypes"})
         
         if resp.ok:
             return {"status": "success", "message": "Webhook successfully registered with Google!"}
         else:
-            return {"status": "error", "message": resp.text}
+            return {"status": "error", "message": f"Google API Error: {resp.text}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
