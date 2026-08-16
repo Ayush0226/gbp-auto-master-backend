@@ -34,7 +34,7 @@ else:
 
 PRICING_PLANS = {
     'half_yearly': {'original': 2999, 'discounted': 1999},
-    'yearly': {'original': 5499, 'discounted': 3999}
+    'yearly': {'original': 5500, 'discounted': 3999}
 }
 
 class OrderRequest(BaseModel):
@@ -432,6 +432,69 @@ async def get_google_reviews(req: GoogleReviewRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/google/run-demo")
+async def run_google_demo(req: GoogleReviewRequest):
+    """
+    Fetches the 2 newest unreplied reviews, uses AI to generate a reply, 
+    AND actually posts the replies live to Google as a magic-moment demo.
+    """
+    try:
+        headers = {"Authorization": f"Bearer {req.provider_token}"}
+        
+        # 1. Fetch account
+        acc_url = "https://mybusinessaccountmanagement.googleapis.com/v1/accounts"
+        acc_resp = requests.get(acc_url, headers=headers)
+        if not acc_resp.ok:
+            return {"status": "error", "message": f"Google Account Fetch Error: {acc_resp.text}"}
+        accounts = acc_resp.json().get('accounts', [])
+        if not accounts:
+            return {"status": "error", "message": "No Google Business Accounts found."}
+        account_name = accounts[0]['name']
+        full_location_path = f"{account_name}/{req.location_id}"
+        
+        # 2. Fetch Reviews
+        url = f"https://mybusiness.googleapis.com/v4/{full_location_path}/reviews"
+        resp = requests.get(url, headers=headers)
+        
+        if not resp.ok:
+            return {"status": "error", "message": resp.text}
+            
+        data = resp.json().get("reviews", [])
+        
+        # 3. Find up to 2 unreplied reviews
+        unreplied = [r for r in data if "reviewReply" not in r]
+        to_reply = unreplied[:2]
+        
+        if not to_reply:
+            return {"status": "error", "message": "No unanswered reviews found on this profile to run the demo!"}
+            
+        replies_generated = []
+        
+        # 4. Generate and Post Replies
+        for rev in to_reply:
+            reviewer_name = rev.get('reviewer', {}).get('displayName', 'Valued Customer')
+            comment = rev.get('comment', 'No text provided.')
+            star_rating = rev.get('starRating', 'FIVE')
+            
+            prompt = f"Customer Name: {reviewer_name}\nRating: {star_rating}\nReview: {comment}\n\nWrite a friendly, SEO-optimized reply from the business owner."
+            
+            ai_reply = generate_ai_reply(groq_api_key, prompt)
+            
+            # Post back to Google
+            reply_url = f"https://mybusiness.googleapis.com/v4/{rev['name']}/reply"
+            reply_resp = requests.put(reply_url, headers=headers, json={"comment": ai_reply})
+            
+            if reply_resp.ok:
+                replies_generated.append({
+                    "reviewer": reviewer_name,
+                    "comment": comment,
+                    "ai_reply": ai_reply
+                })
+                
+        return {"status": "success", "replies": replies_generated}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/google/sync-reviews")
 async def sync_and_reply_reviews(req: GoogleReviewRequest):
     """
@@ -518,6 +581,41 @@ async def sync_and_reply_reviews(req: GoogleReviewRequest):
             "status": "success",
             "message": f"Successfully synced. AI sent {replies_sent} replies."
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/google/register-webhook")
+async def register_google_webhook(req: GoogleReviewRequest):
+    """
+    Tells Google Business Profile API to start pushing new reviews for this account
+    to our specific Pub/Sub topic.
+    """
+    try:
+        headers = {"Authorization": f"Bearer {req.provider_token}"}
+        
+        acc_url = "https://mybusinessaccountmanagement.googleapis.com/v1/accounts"
+        acc_resp = requests.get(acc_url, headers=headers)
+        if not acc_resp.ok:
+            return {"status": "error", "message": f"Google Account Fetch Error: {acc_resp.text}"}
+            
+        accounts = acc_resp.json().get('accounts', [])
+        if not accounts:
+            return {"status": "error", "message": "No Google Business Accounts found."}
+            
+        account_name = accounts[0]['name']
+        
+        # Tell Google to send notifications to our topic
+        notif_url = f"https://mybusiness.googleapis.com/v4/{account_name}/notifications"
+        payload = {
+            "pubsubTopic": "projects/steady-ether-500708-n8/topics/gbp-reviews-topic",
+            "notificationTypes": ["NEW_REVIEW", "UPDATED_REVIEW"]
+        }
+        resp = requests.put(notif_url, headers=headers, json=payload)
+        
+        if resp.ok:
+            return {"status": "success", "message": "Webhook successfully registered with Google!"}
+        else:
+            return {"status": "error", "message": resp.text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -791,6 +889,53 @@ async def publish_scheduled_posts():
                 print(f"Failed to auto-publish post {post['id']}: {e}")
                 
         return {"status": "success", "published": published}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/cron/daily-backlog-reviews")
+async def daily_backlog_reviews():
+    """
+    Runs once a day. Scans all active users and replies to up to 4 old/backlogged reviews per location 
+    to slowly catch up without triggering Google's spam filters.
+    """
+    try:
+        users = supabase.auth.admin.list_users()
+        total_replies_sent = 0
+        
+        for u in users:
+            meta = u.user_metadata or {}
+            refresh_token = meta.get('google_refresh_token')
+            subs = meta.get('subscriptions', {})
+            
+            if not refresh_token or not subs:
+                continue
+                
+            try:
+                access_token = get_offline_access_token(refresh_token)
+                
+                for loc_id, sub_data in subs.items():
+                    if sub_data.get('status') == 'active':
+                        # loc_id in db is usually just "12345" or "locations/12345"
+                        clean_loc_id = loc_id.replace('locations/', '')
+                        
+                        req = GoogleReviewRequest(
+                            provider_token=access_token,
+                            location_id=clean_loc_id,
+                            user_id=u.id
+                        )
+                        res = await sync_and_reply_reviews(req)
+                        
+                        # Just counting successfully sent replies from the response string
+                        if res.get('status') == 'success' and 'AI sent' in res.get('message', ''):
+                            try:
+                                num = int(res['message'].split('AI sent ')[1].split(' ')[0])
+                                total_replies_sent += num
+                            except:
+                                pass
+            except Exception as e:
+                print(f"Failed backlog review sync for user {u.id}: {e}")
+                
+        return {"status": "success", "message": f"Daily backlog completed. Sent {total_replies_sent} replies."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
