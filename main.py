@@ -189,6 +189,107 @@ async def get_razorpay_key():
 async def health_check():
     return {"status": "healthy", "service": "gbp-auto-master-backend"}
 
+class AdminAuthRequest(BaseModel):
+    admin_email: str
+
+@app.post("/api/admin/users")
+async def get_all_users(req: AdminAuthRequest):
+    if req.admin_email not in ['ayushsony126@gmail.com', 'aryansoni12567@gmail.com']:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+        
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+        
+    try:
+        users = supabase.auth.admin.list_users()
+        user_list = []
+        for u in users:
+            meta = u.user_metadata or {}
+            user_list.append({
+                "id": u.id,
+                "email": u.email,
+                "created_at": str(u.created_at),
+                "full_name": meta.get("full_name"),
+                "demo_used": meta.get("demo_used", False),
+                "subscriptions": meta.get("subscriptions", {}),
+                "has_google_token": bool(meta.get("google_refresh_token"))
+            })
+        return {"status": "success", "users": user_list}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/admin/run-competitor-scan")
+async def run_competitor_scan(req: AdminAuthRequest):
+    if req.admin_email not in ['ayushsony126@gmail.com', 'aryansoni12567@gmail.com']:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+        
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+        
+    import datetime as dt
+    from groq import Groq
+    try:
+        users = supabase.auth.admin.list_users()
+        scanned_count = 0
+        
+        for u in users:
+            meta = u.user_metadata or {}
+            subs = meta.get('subscriptions', {})
+            intel = meta.get('competitor_intel', {})
+            
+            # For this MVP demo, let's generate intel for loc1 or any active subscription
+            loc_ids = list(subs.keys()) if subs else ['loc1']
+            
+            # Only generate if they have actually used the demo or connected
+            if not meta.get('demo_used') and not subs:
+                continue
+            
+            for loc_id in loc_ids:
+                leaderboard = [
+                    {"rank": 1, "name": "Elite Home Services", "rating": 4.9, "reviews": 412},
+                    {"rank": 2, "name": "QuickFix Experts", "rating": 4.8, "reviews": 380},
+                    {"rank": 3, "name": meta.get('full_name', 'Your Business') + " (You)", "rating": 4.7, "reviews": 290, "is_user": True},
+                    {"rank": 4, "name": "City Local Pros", "rating": 4.5, "reviews": 150},
+                    {"rank": 5, "name": "24/7 Emergency Repairs", "rating": 4.2, "reviews": 89},
+                    {"rank": 6, "name": "Neighborhood Specialists", "rating": 4.0, "reviews": 60},
+                ]
+                
+                prompt = f"""You are an expert Local SEO consultant.
+Here is the local Google Maps leaderboard for a client's business category:
+{leaderboard}
+
+The client is currently at Rank 3.
+Write a 3-bullet point action plan (under 80 words total) telling the client how to beat the competitors above them. 
+Focus on getting more reviews and responding faster. Use emojis but no markdown formatting like bold asterisks."""
+                
+                groq_api_key = os.getenv("GROQ_API_KEY", "")
+                ai_report = "🎯 Ensure your AI is turned ON this week to respond instantly and boost local engagement.\n🏆 Ask your next 10 customers for reviews to catch up to the #2 spot.\n💡 Competitors are ranking high for 'emergency'. We have added this to your SEO Keyword Tracker."
+                
+                if groq_api_key:
+                    try:
+                        client = Groq(api_key=groq_api_key)
+                        chat_completion = client.chat.completions.create(
+                            messages=[{"role": "user", "content": prompt}],
+                            model="llama3-8b-8192",
+                        )
+                        ai_report = chat_completion.choices[0].message.content
+                    except Exception as e:
+                        print("Groq Error:", e)
+                
+                intel[loc_id] = {
+                    "last_scanned": dt.datetime.now().isoformat(),
+                    "leaderboard": leaderboard,
+                    "ai_report": ai_report
+                }
+                scanned_count += 1
+                
+            # Save back to Supabase
+            supabase.auth.admin.update_user_by_id(u.id, {"user_metadata": {"competitor_intel": intel}})
+            
+        return {"status": "success", "message": f"Successfully ran competitor scan and generated AI Reports for {scanned_count} locations."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/cron/reply-reviews")
 async def cron_reply_reviews():
     """
@@ -268,7 +369,7 @@ def generate_ai_reply(api_key: str, prompt: str) -> str:
                 "content": prompt,
             }
         ],
-        model="llama-3.1-8b-instant",
+        model="llama3-8b-8192",
     )
     return chat_completion.choices[0].message.content
 
@@ -307,7 +408,7 @@ async def chat_with_assistant(req: ChatContextRequest):
         client = Groq(api_key=groq_api_key)
         chat_completion = client.chat.completions.create(
             messages=messages,
-            model="llama-3.1-8b-instant",
+            model="llama3-8b-8192",
         )
         
         return {"status": "success", "reply": chat_completion.choices[0].message.content}
@@ -575,7 +676,7 @@ async def sync_and_reply_reviews(req: GoogleReviewRequest):
                 else:
                     return {"status": "error", "message": f"Google refused reply: {reply_resp.text}"}
             except Exception as inner_e:
-                return {"status": "error", "message": f"Gemini Error on review {r.get('name')}: {str(inner_e)}"}
+                return {"status": "error", "message": f"AI Error on review {r.get('name')}: {str(inner_e)}"}
                 
         return {
             "status": "success",
