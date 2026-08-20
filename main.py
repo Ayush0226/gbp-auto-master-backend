@@ -270,14 +270,22 @@ async def run_competitor_scan(req: AdminAuthRequest):
                 
                 try:
                     res = requests.get("https://serpapi.com/search", params=params)
-                    local_results = res.json().get("local_results", [])
+                    data = res.json()
                     
-                    if not local_results:
-                        # Fallback if SerpApi returns empty (e.g. bad query)
+                    if "error" in data:
+                        error_msg = data["error"]
+                        print("SERPAPI ERROR:", error_msg)
                         local_results = [
-                            {"title": "Elite Services", "rating": 4.9, "reviews": 412},
-                            {"title": "QuickFix Experts", "rating": 4.8, "reviews": 380},
-                            {"title": meta.get('full_name', 'Your Business'), "rating": 4.7, "reviews": 290}
+                            {"title": f"⚠️ SerpApi Error: {error_msg}", "rating": 0.0, "reviews": 0},
+                            {"title": "Please check your SerpApi key and billing.", "rating": 0.0, "reviews": 0}
+                        ]
+                    elif not data.get("local_results"):
+                        # Fallback if SerpApi returns empty (no map pack)
+                        print(f"SERPAPI WARNING: No local_results found for query '{search_query}'.")
+                        local_results = [
+                            {"title": f"⚠️ No Local Map Pack found for '{search_query}'", "rating": 0.0, "reviews": 0},
+                            {"title": "Try adding a more specific SEO keyword like 'Plumber in New York'.", "rating": 0.0, "reviews": 0},
+                            {"title": meta.get('full_name', 'Your Business'), "rating": 5.0, "reviews": 1}
                         ]
                         
                     for idx, place in enumerate(local_results[:10]):
