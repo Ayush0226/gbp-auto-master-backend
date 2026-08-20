@@ -585,7 +585,8 @@ async def get_google_reviews(req: GoogleReviewRequest):
                 "rating": r.get('starRating', 'FIVE'),
                 "comment": r.get('comment', ''),
                 "createTime": r.get('createTime', ''),
-                "has_reply": 'reviewReply' in r
+                "has_reply": 'reviewReply' in r,
+                "reply_comment": r.get('reviewReply', {}).get('comment', '') if 'reviewReply' in r else ''
             })
             
         return {
@@ -785,6 +786,112 @@ async def register_google_webhook(req: GoogleReviewRequest):
             return {"status": "success", "message": "Webhook successfully registered with Google!"}
         else:
             return {"status": "error", "message": f"Google API Error: {resp.text}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/google/draft-reviews")
+async def draft_google_reviews(req: GoogleReviewRequest):
+    """
+    Fetches unreplied reviews and generates AI drafts for them WITHOUT posting them.
+    Used for the Admin Approval Queue.
+    """
+    try:
+        headers = {"Authorization": f"Bearer {req.provider_token}"}
+        
+        acc_url = "https://mybusinessaccountmanagement.googleapis.com/v1/accounts"
+        acc_resp = requests.get(acc_url, headers=headers)
+        if not acc_resp.ok:
+            return {"status": "error", "message": f"Google Account Fetch Error: {acc_resp.text}"}
+        accounts = acc_resp.json().get('accounts', [])
+        if not accounts:
+            return {"status": "error", "message": "No Google Business Accounts found."}
+        account_name = accounts[0]['name']
+        full_location_path = f"{account_name}/{req.location_id}"
+        
+        url = f"https://mybusiness.googleapis.com/v4/{full_location_path}/reviews"
+        resp = requests.get(url, headers=headers)
+        
+        if not resp.ok:
+            return {"status": "error", "message": resp.text}
+            
+        reviews = resp.json().get('reviews', [])
+        
+        # Find unreplied reviews
+        unreplied = [r for r in reviews if 'reviewReply' not in r]
+        
+        # Fetch user_settings from Supabase
+        target_keywords = []
+        ai_settings = {}
+        if supabase:
+            try:
+                user_settings = supabase.table('user_settings').select('*').eq('user_id', req.user_id).execute()
+                if user_settings.data:
+                    ai_settings = user_settings.data[0]
+                    target_keywords = ai_settings.get('active_keywords', [])
+            except Exception as e:
+                print("Error fetching settings from Supabase:", e)
+                
+        keyword_instruction = ""
+        if target_keywords:
+            keyword_list = ", ".join([f'"{k}"' for k in target_keywords])
+            keyword_instruction = f"IMPORTANT: Organically and naturally inject one of these SEO keywords into the reply: {keyword_list}. Do NOT sound like a robot."
+            
+        ai_tone = ai_settings.get('ai_tone', 'Professional') if ai_settings else 'Professional'
+        custom_instructions = ai_settings.get('custom_instructions', '') if ai_settings else ''
+        custom_instruction_text = f"Additional custom instructions from the business owner: {custom_instructions}" if custom_instructions else ""
+        
+        drafts = []
+        
+        for r in unreplied[:10]: # Process max 10 to avoid timeouts
+            try:
+                rating = r.get('starRating', '')
+                if rating in ['ONE', 'TWO'] and ai_settings and not ai_settings.get('reply_to_1_star', False):
+                    continue # Skip negative reviews if user disabled it
+                    
+                customer_comment = r.get('comment', '').strip()
+                if not customer_comment:
+                    customer_comment = "[No text provided, just a star rating]"
+                    
+                prompt = f"Write a {ai_tone.lower()} and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {rating}. Customer Comment: '{customer_comment}'. {keyword_instruction} {custom_instruction_text} Do not include placeholders."
+                
+                ai_reply = generate_ai_reply("dummy_param", prompt)
+                
+                drafts.append({
+                    "review_id": r.get('name'),
+                    "reviewer": r.get('reviewer', {}).get('displayName', 'Anonymous'),
+                    "rating": rating,
+                    "comment": customer_comment,
+                    "draft_reply": ai_reply
+                })
+            except Exception as inner_e:
+                print(f"AI Error on review {r.get('name')}: {str(inner_e)}")
+                
+        return {
+            "status": "success",
+            "drafts": drafts
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class PostReplyRequest(BaseModel):
+    provider_token: str
+    review_id: str
+    reply_text: str
+
+@app.post("/api/google/post-reply")
+async def post_review_reply(req: PostReplyRequest):
+    """
+    Manually post a specific reply to a Google Review.
+    """
+    try:
+        headers = {"Authorization": f"Bearer {req.provider_token}"}
+        reply_url = f"https://mybusiness.googleapis.com/v4/{req.review_id}/reply"
+        reply_resp = requests.put(reply_url, headers=headers, json={"comment": req.reply_text})
+        
+        if reply_resp.ok:
+            return {"status": "success", "message": "Reply posted successfully!"}
+        else:
+            return {"status": "error", "message": f"Google refused reply: {reply_resp.text}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
