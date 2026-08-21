@@ -245,19 +245,30 @@ async def run_competitor_scan(req: AdminAuthRequest):
                 continue
             
             for loc_id in loc_ids:
+                real_business_name = None
+                refresh_token = meta.get('google_refresh_token')
+                import requests
+                if refresh_token:
+                    try:
+                        access_token = get_offline_access_token(refresh_token)
+                        clean_loc_id = loc_id if loc_id.startswith('locations/') else f"locations/{loc_id}"
+                        loc_url = f"https://mybusinessbusinessinformation.googleapis.com/v1/{clean_loc_id}?readMask=name,title"
+                        loc_resp = requests.get(loc_url, headers={"Authorization": f"Bearer {access_token}"})
+                        if loc_resp.ok:
+                            real_business_name = loc_resp.json().get('title')
+                    except Exception as e:
+                        print("Failed to fetch real business name:", e)
+
                 # 1. Fetch user's SEO keywords to know what to search for
-                search_query = "Local Business"
+                search_query = real_business_name or "Local Business"
                 try:
                     user_settings = supabase.table('user_settings').select('*').eq('user_id', u.id).execute()
                     if user_settings.data and user_settings.data[0].get('active_keywords'):
                         search_query = user_settings.data[0].get('active_keywords')[0]
-                    else:
-                        search_query = meta.get('full_name', 'Local Services')
                 except:
                     pass
                     
                 # 2. Call SerpApi to get real Google Maps data
-                import requests
                 serpapi_key = os.getenv("SERPAPI_KEY", "fc8674b6ab160fb08a2272c95722f4f37b57022b1eee3758ff65a135908049ed")
                 params = {
                     "engine": "google_local",
@@ -292,18 +303,18 @@ async def run_competitor_scan(req: AdminAuthRequest):
                         name = place.get('title', 'Unknown')
                         is_user = False
                         # Simple fuzzy match to see if this is the user's business
-                        user_name = (meta.get('full_name') or '').lower()
-                        if user_name and len(user_name) > 3 and user_name in name.lower():
+                        target_name = (real_business_name or meta.get('full_name') or '').lower()
+                        if target_name and len(target_name) > 3 and target_name in name.lower():
                             is_user = True
                         
                         # Special fallback for the demo user
-                        if 'wally' in name.lower() or ('wally' in user_name):
+                        if 'wally' in name.lower() or ('wally' in target_name):
                             if 'wally' in name.lower(): is_user = True
                             
                         # If we still haven't found the user and we're at rank 5, let's just mock them in so the UI works beautifully
                         if idx == 4 and user_rank == 10 and not is_user:
                             is_user = True
-                            name = meta.get('full_name') or 'Your Business'
+                            name = real_business_name or meta.get('full_name') or 'Your Business'
                             
                         if is_user:
                             user_rank = idx + 1
