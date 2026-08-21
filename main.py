@@ -240,8 +240,8 @@ async def run_competitor_scan(req: AdminAuthRequest):
             # For this MVP demo, let's generate intel for loc1 or any active subscription
             loc_ids = list(subs.keys()) if subs else ['loc1']
             
-            # Only generate if they have actually used the demo or connected
-            if not meta.get('demo_used') and not subs:
+            # Only generate if they have actually used the demo or connected (Bypass for admin testing)
+            if not meta.get('demo_used') and not subs and u.email != 'ayushsony126@gmail.com':
                 continue
             
             for loc_id in loc_ids:
@@ -298,6 +298,8 @@ async def run_competitor_scan(req: AdminAuthRequest):
                             {"title": "Try adding a more specific SEO keyword like 'Plumber in New York'.", "rating": 0.0, "reviews": 0},
                             {"title": real_business_name or meta.get('full_name') or 'Your Business', "rating": 5.0, "reviews": 1}
                         ]
+                    else:
+                        local_results = data.get("local_results")
                         
                     for idx, place in enumerate(local_results[:10]):
                         name = place.get('title') or 'Unknown'
