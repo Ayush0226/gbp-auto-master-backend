@@ -292,7 +292,7 @@ async def run_competitor_scan(req: AdminAuthRequest):
                         name = place.get('title', 'Unknown')
                         is_user = False
                         # Simple fuzzy match to see if this is the user's business
-                        user_name = meta.get('full_name', '').lower()
+                        user_name = (meta.get('full_name') or '').lower()
                         if user_name and len(user_name) > 3 and user_name in name.lower():
                             is_user = True
                         
@@ -303,7 +303,7 @@ async def run_competitor_scan(req: AdminAuthRequest):
                         # If we still haven't found the user and we're at rank 5, let's just mock them in so the UI works beautifully
                         if idx == 4 and user_rank == 10 and not is_user:
                             is_user = True
-                            name = meta.get('full_name', 'Your Business')
+                            name = meta.get('full_name') or 'Your Business'
                             
                         if is_user:
                             user_rank = idx + 1
