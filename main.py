@@ -220,7 +220,7 @@ async def get_all_users(req: AdminAuthRequest):
 
 @app.post("/api/admin/run-competitor-scan")
 async def run_competitor_scan(req: AdminAuthRequest):
-    if req.admin_email not in ['ayushsony126@gmail.com', 'aryansoni12567@gmail.com']:
+    if req.admin_email != 'ayushsony126@gmail.com':
         raise HTTPException(status_code=403, detail="Unauthorized")
         
     if not supabase:
