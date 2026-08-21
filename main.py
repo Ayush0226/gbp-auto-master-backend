@@ -296,11 +296,11 @@ async def run_competitor_scan(req: AdminAuthRequest):
                         local_results = [
                             {"title": f"⚠️ No Local Map Pack found for '{search_query}'", "rating": 0.0, "reviews": 0},
                             {"title": "Try adding a more specific SEO keyword like 'Plumber in New York'.", "rating": 0.0, "reviews": 0},
-                            {"title": meta.get('full_name', 'Your Business'), "rating": 5.0, "reviews": 1}
+                            {"title": real_business_name or meta.get('full_name') or 'Your Business', "rating": 5.0, "reviews": 1}
                         ]
                         
                     for idx, place in enumerate(local_results[:10]):
-                        name = place.get('title', 'Unknown')
+                        name = place.get('title') or 'Unknown'
                         is_user = False
                         # Simple fuzzy match to see if this is the user's business
                         target_name = (real_business_name or meta.get('full_name') or '').lower()
