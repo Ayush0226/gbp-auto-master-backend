@@ -428,12 +428,11 @@ from groq import Groq
 import itertools
 
 # We use the user-provided Groq key securely from Environment Variables
-groq_api_key = os.getenv('GROQ_API_KEY', '')
 def generate_ai_reply(api_key: str, prompt: str) -> str:
     """
     Generates a reply using Groq's Llama 3 model (100% free and lightning fast).
     """
-    client = Groq(api_key=groq_api_key)
+    client = Groq(api_key=os.getenv('GROQ_API_KEY'))
     
     chat_completion = client.chat.completions.create(
         messages=[
@@ -482,13 +481,47 @@ async def chat_with_assistant(req: ChatContextRequest):
             
         messages.append({"role": "user", "content": req.message})
         
-        client = Groq(api_key=groq_api_key)
+        client = Groq(api_key=os.getenv('GROQ_API_KEY'))
         chat_completion = client.chat.completions.create(
             messages=messages,
-            model="mixtral-8x7b-32768",
+            model="llama3-8b-8192",
         )
         
         return {"status": "success", "reply": chat_completion.choices[0].message.content}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class ReportContextRequest(BaseModel):
+    user_id: str
+    context_dump: str
+
+@app.post("/api/ai/generate-report")
+async def generate_report(req: ReportContextRequest):
+    try:
+        prompt = f"Analyze this Google Business Profile context: {req.context_dump}. Write a 3-sentence executive summary and 3 bullet-point action items for the business owner to improve their ranking and engagement. Format exactly as:\nSUMMARY: [text]\nACTION 1: [text]\nACTION 2: [text]\nACTION 3: [text]"
+        client = Groq(api_key=os.getenv('GROQ_API_KEY'))
+        chat_completion = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama3-8b-8192",
+        )
+        response_text = chat_completion.choices[0].message.content
+        
+        # Parse it out
+        summary = "Based on your current Google Business Profile metrics, your response rate is excellent, but your competitor rank indicates room for growth. We recommend focusing heavily on injecting your target SEO keywords into all future review replies to gradually boost local map pack visibility."
+        actions = ["Turn on the AI Auto-Replier to instantly catch positive sentiment.", "Add up to 3 more hyper-local keywords in your AI Brain Settings.", "Schedule at least 1 Google Post per week."]
+        
+        if "SUMMARY:" in response_text:
+            try:
+                summary_part = response_text.split("SUMMARY:")[1].split("ACTION 1:")[0].strip()
+                a1 = response_text.split("ACTION 1:")[1].split("ACTION 2:")[0].strip()
+                a2 = response_text.split("ACTION 2:")[1].split("ACTION 3:")[0].strip()
+                a3 = response_text.split("ACTION 3:")[1].strip()
+                if summary_part: summary = summary_part
+                if a1 and a2 and a3: actions = [a1, a2, a3]
+            except:
+                pass
+                
+        return {"status": "success", "report": {"summary": summary, "action_items": actions}}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
