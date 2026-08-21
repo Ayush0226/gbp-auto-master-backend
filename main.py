@@ -269,7 +269,7 @@ async def run_competitor_scan(req: AdminAuthRequest):
                     pass
                     
                 # 2. Call SerpApi to get real Google Maps data
-                serpapi_key = os.getenv("SERPAPI_KEY", "fc8674b6ab160fb08a2272c95722f4f37b57022b1eee3758ff65a135908049ed")
+                serpapi_key = os.getenv("SERPAPI_KEY")
                 params = {
                     "engine": "google_local",
                     "q": search_query,
