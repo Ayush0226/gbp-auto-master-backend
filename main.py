@@ -348,7 +348,7 @@ Focus on getting more reviews and responding faster. Use emojis but no markdown 
                         client = Groq(api_key=groq_api_key)
                         chat_completion = client.chat.completions.create(
                             messages=[{"role": "user", "content": prompt}],
-                            model="mixtral-8x7b-32768",
+                            model="llama-3.1-8b-instant",
                         )
                         ai_report = chat_completion.choices[0].message.content
                     except Exception as e:
@@ -447,7 +447,7 @@ def generate_ai_reply(api_key: str, prompt: str) -> str:
                 "content": prompt,
             }
         ],
-        model="mixtral-8x7b-32768",
+        model="llama-3.1-8b-instant",
     )
     return chat_completion.choices[0].message.content
 
@@ -486,7 +486,7 @@ async def chat_with_assistant(req: ChatContextRequest):
         client = Groq(api_key=os.getenv('GROQ_API_KEY'))
         chat_completion = client.chat.completions.create(
             messages=messages,
-            model="llama3-8b-8192",
+            model="llama-3.1-8b-instant",
         )
         
         return {"status": "success", "reply": chat_completion.choices[0].message.content}
@@ -504,7 +504,7 @@ async def generate_report(req: ReportContextRequest):
         client = Groq(api_key=os.getenv('GROQ_API_KEY'))
         chat_completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="llama3-8b-8192",
+            model="llama-3.1-8b-instant",
         )
         response_text = chat_completion.choices[0].message.content
         
