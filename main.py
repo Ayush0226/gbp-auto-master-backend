@@ -347,11 +347,7 @@ Focus on getting more reviews and responding faster. Use emojis but no markdown 
                 
                 if groq_api_key:
                     try:
-                        client = Groq(api_key=groq_api_key)
-                        chat_completion = client.chat.completions.create(
-                            messages=[{"role": "user", "content": prompt}],
-                            model="llama3-8b-8192",
-                        )
+                        chat_completion = call_groq_with_fallback(groq_api_key, [{"role": "user", "content": prompt}])
                         ai_report = chat_completion.choices[0].message.content
                     except Exception as e:
                         print("Groq Error:", e)
@@ -432,25 +428,41 @@ from groq import Groq
 import itertools
 
 # We use the user-provided Groq key securely from Environment Variables
+def call_groq_with_fallback(api_key: str, messages: list):
+    client = Groq(api_key=api_key or os.getenv('GROQ_API_KEY'))
+    # List of models from newest/best to oldest fallback
+    models = [
+        "llama-3.3-70b-versatile",
+        "llama-3.2-11b-vision-preview",
+        "llama-3.1-8b-instant",
+        "llama-3.1-70b-versatile",
+        "llama3-8b-8192",
+        "llama3-70b-8192",
+        "mixtral-8x7b-32768",
+        "gemma2-9b-it"
+    ]
+    last_e = None
+    for m in models:
+        try:
+            return client.chat.completions.create(messages=messages, model=m)
+        except Exception as e:
+            last_e = e
+    raise last_e
+
 def generate_ai_reply(api_key: str, prompt: str) -> str:
     """
     Generates a reply using Groq's Llama 3 model (100% free and lightning fast).
     """
-    client = Groq(api_key=os.getenv('GROQ_API_KEY'))
-    
-    chat_completion = client.chat.completions.create(
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a professional customer service AI. Write extremely short (max 2 sentences) and polite replies to customer reviews."
-            },
-            {
-                "role": "user",
-                "content": prompt,
-            }
-        ],
-        model="llama3-8b-8192",
-    )
+    chat_completion = call_groq_with_fallback(api_key, [
+        {
+            "role": "system",
+            "content": "You are a professional customer service AI. Write extremely short (max 2 sentences) and polite replies to customer reviews."
+        },
+        {
+            "role": "user",
+            "content": prompt,
+        }
+    ])
     return chat_completion.choices[0].message.content
 
 class GoogleSyncRequest(BaseModel):
@@ -485,11 +497,7 @@ async def chat_with_assistant(req: ChatContextRequest):
             
         messages.append({"role": "user", "content": req.message})
         
-        client = Groq(api_key=os.getenv('GROQ_API_KEY'))
-        chat_completion = client.chat.completions.create(
-            messages=messages,
-            model="llama3-8b-8192",
-        )
+        chat_completion = call_groq_with_fallback(os.getenv('GROQ_API_KEY'), messages)
         
         return {"status": "success", "reply": chat_completion.choices[0].message.content}
     except Exception as e:
@@ -503,11 +511,7 @@ class ReportContextRequest(BaseModel):
 async def generate_report(req: ReportContextRequest):
     try:
         prompt = f"Analyze this Google Business Profile context: {req.context_dump}. Write a 3-sentence executive summary and 3 bullet-point action items for the business owner to improve their ranking and engagement. Format exactly as:\nSUMMARY: [text]\nACTION 1: [text]\nACTION 2: [text]\nACTION 3: [text]"
-        client = Groq(api_key=os.getenv('GROQ_API_KEY'))
-        chat_completion = client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model="llama3-8b-8192",
-        )
+        chat_completion = call_groq_with_fallback(os.getenv('GROQ_API_KEY'), [{"role": "user", "content": prompt}])
         response_text = chat_completion.choices[0].message.content
         
         # Parse it out
