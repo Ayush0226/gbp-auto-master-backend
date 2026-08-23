@@ -339,8 +339,14 @@ Here is the LIVE Google Maps leaderboard for the search '{search_query}':
 {leaderboard}
 
 The client is currently at Rank {user_rank}.
-Write a 3-bullet point action plan (under 80 words total) telling the client how to beat the competitors above them. 
-Focus on getting more reviews and responding faster. Use emojis but no markdown formatting like bold asterisks."""
+Write a professional, concise report in EXACTLY this format:
+PROS:
+- (1 bullet point on what they are doing right based on their rank/reviews)
+CONS:
+- (1 bullet point on why competitors are beating them)
+ACTION PLAN:
+- (2 bullet points on exactly how to outrank them)
+Do not include any other text."""
                 
                 groq_api_key = os.getenv("GROQ_API_KEY", "")
                 ai_report = "🎯 Ensure your AI is turned ON this week to respond instantly and boost local engagement.\n🏆 Ask your next 10 customers for reviews to catch up to the next spot.\n💡 Keep injecting your SEO keywords into review replies."
@@ -449,11 +455,11 @@ def call_groq_with_fallback(api_key: str, messages: list):
             last_e = e
     raise last_e
 
-def generate_ai_reply(api_key: str, prompt: str) -> str:
+def generate_ai_reply(prompt: str) -> str:
     """
     Generates a reply using Groq's Llama 3 model (100% free and lightning fast).
     """
-    chat_completion = call_groq_with_fallback(api_key, [
+    chat_completion = call_groq_with_fallback(os.getenv('GROQ_API_KEY'), [
         {
             "role": "system",
             "content": "You are a professional customer service AI. Write extremely short (max 2 sentences) and polite replies to customer reviews."
@@ -784,7 +790,7 @@ async def sync_and_reply_reviews(req: GoogleReviewRequest):
                     
                 prompt = f"Write a {ai_tone.lower()} and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {rating}. Customer Comment: '{customer_comment}'. {keyword_instruction} {custom_instruction_text} Do not include placeholders."
                 
-                ai_reply = generate_ai_reply("dummy_param", prompt)
+                ai_reply = generate_ai_reply(prompt)
                 
                 # Post reply back to Google API
                 reply_url = f"https://mybusiness.googleapis.com/v4/{r.get('name')}/reply"
@@ -906,7 +912,7 @@ async def draft_google_reviews(req: GoogleReviewRequest):
                     
                 prompt = f"Write a {ai_tone.lower()} and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {rating}. Customer Comment: '{customer_comment}'. {keyword_instruction} {custom_instruction_text} Do not include placeholders."
                 
-                ai_reply = generate_ai_reply("dummy_param", prompt)
+                ai_reply = generate_ai_reply(prompt)
                 
                 drafts.append({
                     "review_id": r.get('name'),
@@ -1346,7 +1352,7 @@ async def google_reviews_webhook(req: Request):
         # 4. Generate AI Reply
         prompt = f"Write a professional and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {review_data.get('starRating')}. Customer Comment: '{review_data.get('comment', '')}'. {keyword_instruction} Do not include placeholders."
         
-        ai_reply = generate_ai_reply("dummy_param", prompt)
+        ai_reply = generate_ai_reply(prompt)
         
         # 5. Post Reply
         reply_url = f"https://mybusiness.googleapis.com/v4/{review_name}/reply"
