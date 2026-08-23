@@ -87,18 +87,19 @@ async def create_order(req: OrderRequest):
             
     # Generate Razorpay Order
     data = {
-        "amount": final_price * 100, # Subunits
+        "amount": int(final_price * 100), # Subunits (ensure int)
         "currency": "INR",
         "receipt": f"receipt_{req.user_id[:8]}",
         "notes": {
             "plan_id": req.plan_id,
             "user_id": req.user_id,
-            "location_id": req.location_id
+            "location_id": str(req.location_id) if req.location_id else "unknown"
         }
     }
     
     try:
-        order = razorpay_client.order.create(data=data)
+        rzp = razorpay.Client(auth=(os.getenv('RAZORPAY_KEY_ID', ''), os.getenv('RAZORPAY_KEY_SECRET', '')))
+        order = rzp.order.create(data=data)
         return {"status": "success", "order_id": order['id'], "amount": data['amount']}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -121,7 +122,8 @@ async def verify_payment(req: VerifyRequest):
             'razorpay_signature': req.razorpay_signature
         }
         
-        razorpay_client.utility.verify_payment_signature(params_dict)
+        rzp = razorpay.Client(auth=(os.getenv('RAZORPAY_KEY_ID', ''), os.getenv('RAZORPAY_KEY_SECRET', '')))
+        rzp.utility.verify_payment_signature(params_dict)
         
         # If we get here, signature is valid! Securely update Supabase.
         if not supabase:
