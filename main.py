@@ -191,6 +191,35 @@ async def get_razorpay_key():
 async def health_check():
     return {"status": "healthy", "service": "gbp-auto-master-backend"}
 
+class SaveAISettingsRequest(BaseModel):
+    user_id: str
+    location_id: str
+    settings: dict
+
+@app.post("/api/user/save-ai-settings")
+async def save_ai_settings(req: SaveAISettingsRequest):
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    try:
+        user_data = supabase.auth.admin.get_user_by_id(req.user_id)
+        if not user_data.user:
+            raise HTTPException(status_code=404, detail="User not found")
+            
+        user_meta = user_data.user.user_metadata or {}
+        ai_settings = user_meta.get("ai_settings", {})
+        
+        ai_settings[req.location_id] = req.settings
+        
+        supabase.auth.admin.update_user_by_id(
+            req.user_id,
+            {"user_metadata": {"ai_settings": ai_settings}}
+        )
+        return {"status": "success", "message": "AI settings saved successfully"}
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        return {"status": "error", "message": f"Backend Crash: {str(e)} | Trace: {error_details}"}
+
 class AdminAuthRequest(BaseModel):
     admin_email: str
 
@@ -264,11 +293,12 @@ async def run_competitor_scan(req: AdminAuthRequest):
                 # 1. Fetch user's SEO keywords to know what to search for
                 search_query = real_business_name or "Local Business"
                 try:
-                    user_settings = supabase.table('user_settings').select('*').eq('user_id', u.id).execute()
-                    if user_settings.data and user_settings.data[0].get('active_keywords'):
-                        search_query = user_settings.data[0].get('active_keywords')[0]
-                except:
-                    pass
+                    all_settings = meta.get("ai_settings", {})
+                    loc_settings = all_settings.get(loc_id, {})
+                    if loc_settings.get('active_keywords'):
+                        search_query = loc_settings.get('active_keywords')[0]
+                except Exception as e:
+                    print("Error getting keywords from metadata:", e)
                     
                 # 2. Call SerpApi to get real Google Maps data
                 serpapi_key = os.getenv("SERPAPI_KEY")
@@ -877,17 +907,18 @@ async def draft_google_reviews(req: GoogleReviewRequest):
         # Find unreplied reviews
         unreplied = [r for r in reviews if 'reviewReply' not in r]
         
-        # Fetch user_settings from Supabase
+        # Fetch user_settings from Supabase user_metadata
         target_keywords = []
         ai_settings = {}
         if supabase:
             try:
-                user_settings = supabase.table('user_settings').select('*').eq('user_id', req.user_id).execute()
-                if user_settings.data:
-                    ai_settings = user_settings.data[0]
+                user_data = supabase.auth.admin.get_user_by_id(req.user_id)
+                if user_data.user:
+                    all_settings = (user_data.user.user_metadata or {}).get("ai_settings", {})
+                    ai_settings = all_settings.get(req.location_id, {})
                     target_keywords = ai_settings.get('active_keywords', [])
             except Exception as e:
-                print("Error fetching settings from Supabase:", e)
+                print("Error fetching settings from Supabase metadata:", e)
                 
         keyword_instruction = ""
         if target_keywords:
@@ -1334,15 +1365,15 @@ async def google_reviews_webhook(req: Request):
         if 'reviewReply' in review_data:
             return {"status": "ignored", "reason": "Already replied"}
             
-        # Fetch target keywords from Supabase
+        # Fetch target keywords from Supabase metadata
         target_keywords = []
         if supabase and target_user:
             try:
-                user_settings = supabase.table('user_settings').select('active_keywords').eq('user_id', target_user.id).execute()
-                if user_settings.data and user_settings.data[0].get('active_keywords'):
-                    target_keywords = user_settings.data[0].get('active_keywords')
+                all_settings = (target_user.user_metadata or {}).get("ai_settings", {})
+                loc_settings = all_settings.get(loc_id_short, {})
+                target_keywords = loc_settings.get('active_keywords', [])
             except Exception as e:
-                print("Error fetching keywords from Supabase:", e)
+                print("Error fetching keywords from metadata:", e)
                 
         keyword_instruction = ""
         if target_keywords:
