@@ -1096,17 +1096,21 @@ async def get_google_search_keywords(req: GoogleReviewRequest):
     try:
         headers = {"Authorization": f"Bearer {req.provider_token}"}
         
-        # We need the last fully completed month or current month
+        # Google only returns keyword data for FULLY completed months.
+        # We must query the previous month, not the current incomplete month.
         import datetime as dt
-        end_date = dt.datetime.utcnow()
-        start_date = end_date - dt.timedelta(days=30)
+        today = dt.datetime.utcnow()
+        
+        first_day_current = today.replace(day=1)
+        prev_month_date = first_day_current - dt.timedelta(days=1)
+        start_month_date = prev_month_date - dt.timedelta(days=90) # ~3 months prior
         
         params = {
-            "monthlyRange.startMonth.year": start_date.year,
-            "monthlyRange.startMonth.month": start_date.month,
-            "monthlyRange.endMonth.year": end_date.year,
-            "monthlyRange.endMonth.month": end_date.month,
-            "pageSize": 10
+            "monthlyRange.startMonth.year": start_month_date.year,
+            "monthlyRange.startMonth.month": start_month_date.month,
+            "monthlyRange.endMonth.year": prev_month_date.year,
+            "monthlyRange.endMonth.month": prev_month_date.month,
+            "pageSize": 20
         }
         
         clean_loc = req.location_id
