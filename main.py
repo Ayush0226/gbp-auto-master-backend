@@ -338,17 +338,13 @@ async def run_competitor_scan(req: AdminAuthRequest):
                         is_user = False
                         # Simple fuzzy match to see if this is the user's business
                         target_name = (real_business_name or meta.get('full_name') or '').lower()
-                        if target_name and len(target_name) > 3 and target_name in name.lower():
-                            is_user = True
+                        # Better fuzzy match (remove punctuation)
+                        import re
+                        clean_target = re.sub(r'[^\w\s]', '', target_name).strip()
+                        clean_name = re.sub(r'[^\w\s]', '', name.lower()).strip()
                         
-                        # Special fallback for the demo user
-                        if 'wally' in name.lower() or ('wally' in target_name):
-                            if 'wally' in name.lower(): is_user = True
-                            
-                        # If we still haven't found the user and we're at rank 5, let's just mock them in so the UI works beautifully
-                        if idx == 4 and user_rank == 10 and not is_user:
+                        if clean_target and len(clean_target) > 3 and (clean_target in clean_name or clean_name in clean_target):
                             is_user = True
-                            name = real_business_name or meta.get('full_name') or 'Your Business'
                             
                         if is_user:
                             user_rank = idx + 1
@@ -359,6 +355,17 @@ async def run_competitor_scan(req: AdminAuthRequest):
                             "rating": float(place.get('rating', 4.0)),
                             "reviews": int(place.get('reviews', 0)),
                             "is_user": is_user
+                        })
+                        
+                    # If the user still wasn't found in the top 10, append them at the end as unranked
+                    if user_rank == 10 and not any(l['is_user'] for l in leaderboard):
+                        user_rank = 11
+                        leaderboard.append({
+                            "rank": "11+",
+                            "name": (real_business_name or meta.get('full_name') or 'Your Business') + " (You)",
+                            "rating": 0.0,
+                            "reviews": 0,
+                            "is_user": True
                         })
                 except Exception as e:
                     print("SerpApi Error:", e)
