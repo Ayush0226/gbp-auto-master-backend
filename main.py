@@ -214,6 +214,18 @@ async def save_ai_settings(req: SaveAISettingsRequest):
             req.user_id,
             {"user_metadata": {"ai_settings": ai_settings}}
         )
+        
+        # Also sync to the user_settings table
+        try:
+            supabase.table('user_settings').upsert({
+                'user_id': req.user_id,
+                'location_id': req.location_id,
+                'active_keywords': req.settings.get('active_keywords', []),
+                'is_ai_active': req.settings.get('is_ai_active', True)
+            }).execute()
+        except Exception as table_err:
+            print("Failed to sync to user_settings table:", table_err)
+            
         return {"status": "success", "message": "AI settings saved successfully"}
     except Exception as e:
         import traceback
@@ -246,6 +258,24 @@ async def get_all_users(req: AdminAuthRequest):
                 "has_google_token": bool(meta.get("google_refresh_token"))
             })
         return {"status": "success", "users": user_list}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class AdminUserRequest(BaseModel):
+    admin_email: str
+    target_user_id: str
+
+@app.post("/api/admin/calendar")
+async def admin_get_calendar(req: AdminUserRequest):
+    if req.admin_email not in ['ayushsony126@gmail.com', 'aryansoni12567@gmail.com']:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+        
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+        
+    try:
+        posts = supabase.table('calendar_posts').select('*').eq('user_id', req.target_user_id).order('post_date', desc=True).execute()
+        return {"status": "success", "posts": posts.data or []}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
