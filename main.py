@@ -277,18 +277,24 @@ async def run_competitor_scan(req: AdminAuthRequest):
             
             for loc_id in loc_ids:
                 real_business_name = None
+                business_city = None
+                business_country = None
                 refresh_token = meta.get('google_refresh_token')
                 import requests
                 if refresh_token:
                     try:
                         access_token = get_offline_access_token(refresh_token)
                         clean_loc_id = loc_id if loc_id.startswith('locations/') else f"locations/{loc_id}"
-                        loc_url = f"https://mybusinessbusinessinformation.googleapis.com/v1/{clean_loc_id}?readMask=name,title"
+                        loc_url = f"https://mybusinessbusinessinformation.googleapis.com/v1/{clean_loc_id}?readMask=name,title,storefrontAddress"
                         loc_resp = requests.get(loc_url, headers={"Authorization": f"Bearer {access_token}"})
                         if loc_resp.ok:
-                            real_business_name = loc_resp.json().get('title')
+                            loc_data = loc_resp.json()
+                            real_business_name = loc_data.get('title')
+                            address = loc_data.get('storefrontAddress', {})
+                            business_city = address.get('locality')
+                            business_country = address.get('regionCode')
                     except Exception as e:
-                        print("Failed to fetch real business name:", e)
+                        print("Failed to fetch real business name/address:", e)
 
                 # 1. Fetch user's SEO keywords to know what to search for
                 search_query = real_business_name or "Local Business"
@@ -307,6 +313,12 @@ async def run_competitor_scan(req: AdminAuthRequest):
                     "q": search_query,
                     "api_key": serpapi_key
                 }
+                
+                # Make sure SerpApi searches in the user's actual city!
+                if business_city:
+                    params["location"] = f"{business_city}, {business_country or ''}".strip(', ')
+                elif business_country:
+                    params["gl"] = business_country.lower()
                 
                 leaderboard = []
                 user_rank = 10
