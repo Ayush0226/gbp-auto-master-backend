@@ -815,10 +815,11 @@ async def sync_and_reply_reviews(req: GoogleReviewRequest):
                     continue # Skip negative reviews if user disabled it
                     
                 customer_comment = r.get('comment', '').strip()
+                
                 if not customer_comment:
-                    customer_comment = "[No text provided, just a star rating]"
-                    
-                prompt = f"Write a {ai_tone.lower()} and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {rating}. Customer Comment: '{customer_comment}'. {keyword_instruction} {custom_instruction_text} Do not include placeholders."
+                    prompt = f"A customer just left a {rating}-star rating with NO text. Write a {ai_tone.lower()} and extremely short, creative 'Thank you' reply (max 2 sentences) appreciating their rating. {keyword_instruction} {custom_instruction_text} Do not include placeholders."
+                else:
+                    prompt = f"Write a {ai_tone.lower()} and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {rating}. Customer Comment: '{customer_comment}'. {keyword_instruction} {custom_instruction_text} Do not include placeholders."
                 
                 ai_reply = generate_ai_reply(prompt)
                 
@@ -938,10 +939,11 @@ async def draft_google_reviews(req: GoogleReviewRequest):
                     continue # Skip negative reviews if user disabled it
                     
                 customer_comment = r.get('comment', '').strip()
+                
                 if not customer_comment:
-                    customer_comment = "[No text provided, just a star rating]"
-                    
-                prompt = f"Write a {ai_tone.lower()} and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {rating}. Customer Comment: '{customer_comment}'. {keyword_instruction} {custom_instruction_text} Do not include placeholders."
+                    prompt = f"A customer just left a {rating}-star rating with NO text. Write a {ai_tone.lower()} and extremely short, creative 'Thank you' reply (max 2 sentences) appreciating their rating. {keyword_instruction} {custom_instruction_text} Do not include placeholders."
+                else:
+                    prompt = f"Write a {ai_tone.lower()} and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {rating}. Customer Comment: '{customer_comment}'. {keyword_instruction} {custom_instruction_text} Do not include placeholders."
                 
                 ai_reply = generate_ai_reply(prompt)
                 
@@ -1384,8 +1386,12 @@ async def google_reviews_webhook(req: Request):
             keyword_list = ", ".join([f'"{k}"' for k in target_keywords])
             keyword_instruction = f"IMPORTANT: Organically and naturally inject one of these SEO keywords into the reply: {keyword_list}. Do NOT sound like a robot."
             
-        # 4. Generate AI Reply
-        prompt = f"Write a professional and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {review_data.get('starRating')}. Customer Comment: '{review_data.get('comment', '')}'. {keyword_instruction} Do not include placeholders."
+        customer_comment = review_data.get('comment', '').strip()
+        rating = review_data.get('starRating')
+        if not customer_comment:
+            prompt = f"A customer just left a {rating}-star rating with NO text. Write a professional and extremely short, creative 'Thank you' reply (max 2 sentences) appreciating their rating. {keyword_instruction} Do not include placeholders."
+        else:
+            prompt = f"Write a professional and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {rating}. Customer Comment: '{customer_comment}'. {keyword_instruction} Do not include placeholders."
         
         ai_reply = generate_ai_reply(prompt)
         
