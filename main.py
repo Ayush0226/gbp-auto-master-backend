@@ -513,7 +513,7 @@ from groq import Groq
 import itertools
 
 # We use the user-provided Groq key securely from Environment Variables
-def call_groq_with_fallback(api_key: str, messages: list):
+def call_groq_with_fallback(api_key: str, messages: list, temperature: float = 0.2):
     client = Groq(api_key=api_key or os.getenv('GROQ_API_KEY'))
     # List of models from newest/best to oldest fallback
     models = [
@@ -529,7 +529,7 @@ def call_groq_with_fallback(api_key: str, messages: list):
     last_e = None
     for m in models:
         try:
-            return client.chat.completions.create(messages=messages, model=m)
+            return client.chat.completions.create(messages=messages, model=m, temperature=temperature)
         except Exception as e:
             last_e = e
     raise last_e
@@ -541,13 +541,13 @@ def generate_ai_reply(prompt: str) -> str:
     chat_completion = call_groq_with_fallback(os.getenv('GROQ_API_KEY'), [
         {
             "role": "system",
-            "content": "You are a professional customer service AI. Write extremely short (max 2 sentences) and polite replies to customer reviews."
+            "content": "You are a professional customer service AI. Write extremely short (max 2 sentences) and polite replies to customer reviews. NEVER repeat the exact same phrasing. Vary your vocabulary and tone slightly so every reply is unique and personalized."
         },
         {
             "role": "user",
             "content": prompt,
         }
-    ])
+    ], temperature=0.75)
     return chat_completion.choices[0].message.content
 
 class GoogleSyncRequest(BaseModel):
@@ -860,15 +860,16 @@ async def sync_and_reply_reviews(req: GoogleReviewRequest):
         for r in unreplied:
             try:
                 rating = r.get('starRating', '')
+                reviewer_name = r.get('reviewer', {}).get('displayName', 'Valued Customer')
                 if rating in ['ONE', 'TWO'] and ai_settings and not ai_settings.get('reply_to_1_star', False):
                     continue # Skip negative reviews if user disabled it
                     
                 customer_comment = r.get('comment', '').strip()
                 
                 if not customer_comment:
-                    prompt = f"A customer just left a {rating}-star rating with NO text. Write a {ai_tone.lower()} and extremely short, creative 'Thank you' reply (max 2 sentences) appreciating their rating. {keyword_instruction} {custom_instruction_text} Do not include placeholders."
+                    prompt = f"Customer '{reviewer_name}' just left a {rating}-star rating with NO text. Write a {ai_tone.lower()} and extremely short, creative 'Thank you' reply (max 2 sentences) appreciating their rating. Use their first name if possible. {keyword_instruction} {custom_instruction_text} Do not include placeholders."
                 else:
-                    prompt = f"Write a {ai_tone.lower()} and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {rating}. Customer Comment: '{customer_comment}'. {keyword_instruction} {custom_instruction_text} Do not include placeholders."
+                    prompt = f"Write a {ai_tone.lower()} and extremely short reply (max 2 sentences) to this customer review. Customer Name: '{reviewer_name}'. Customer Rating: {rating}. Customer Comment: '{customer_comment}'. Use their first name if possible. {keyword_instruction} {custom_instruction_text} Do not include placeholders."
                 
                 ai_reply = generate_ai_reply(prompt)
                 
@@ -984,15 +985,16 @@ async def draft_google_reviews(req: GoogleReviewRequest):
         for r in unreplied[:10]: # Process max 10 to avoid timeouts
             try:
                 rating = r.get('starRating', '')
+                reviewer_name = r.get('reviewer', {}).get('displayName', 'Valued Customer')
                 if rating in ['ONE', 'TWO'] and ai_settings and not ai_settings.get('reply_to_1_star', False):
                     continue # Skip negative reviews if user disabled it
                     
                 customer_comment = r.get('comment', '').strip()
                 
                 if not customer_comment:
-                    prompt = f"A customer just left a {rating}-star rating with NO text. Write a {ai_tone.lower()} and extremely short, creative 'Thank you' reply (max 2 sentences) appreciating their rating. {keyword_instruction} {custom_instruction_text} Do not include placeholders."
+                    prompt = f"Customer '{reviewer_name}' just left a {rating}-star rating with NO text. Write a {ai_tone.lower()} and extremely short, creative 'Thank you' reply (max 2 sentences) appreciating their rating. Use their first name if possible. {keyword_instruction} {custom_instruction_text} Do not include placeholders."
                 else:
-                    prompt = f"Write a {ai_tone.lower()} and extremely short reply (max 2 sentences) to this customer review. Customer Rating: {rating}. Customer Comment: '{customer_comment}'. {keyword_instruction} {custom_instruction_text} Do not include placeholders."
+                    prompt = f"Write a {ai_tone.lower()} and extremely short reply (max 2 sentences) to this customer review. Customer Name: '{reviewer_name}'. Customer Rating: {rating}. Customer Comment: '{customer_comment}'. Use their first name if possible. {keyword_instruction} {custom_instruction_text} Do not include placeholders."
                 
                 ai_reply = generate_ai_reply(prompt)
                 
