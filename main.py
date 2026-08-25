@@ -327,27 +327,27 @@ async def run_competitor_scan(req: AdminAuthRequest):
                         print("Failed to fetch real business name/address:", e)
 
                 # 1. Fetch user's SEO keywords to know what to search for
-                search_query = real_business_name or "Local Business"
+                base_query = real_business_name or "Local Business"
                 try:
                     all_settings = meta.get("ai_settings", {})
                     loc_settings = all_settings.get(loc_id, {})
                     if loc_settings.get('active_keywords'):
-                        search_query = loc_settings.get('active_keywords')[0]
+                        base_query = loc_settings.get('active_keywords')[0]
                 except Exception as e:
                     print("Error getting keywords from metadata:", e)
                     
                 # 2. Call SerpApi to get real Google Maps data
                 serpapi_key = os.getenv("SERPAPI_KEY")
+                search_query = f"{base_query} in {business_city}" if business_city else base_query
+                
                 params = {
                     "engine": "google_local",
                     "q": search_query,
                     "api_key": serpapi_key
                 }
                 
-                # Make sure SerpApi searches in the user's actual city!
-                if business_city:
-                    params["location"] = f"{business_city}, {business_country or ''}".strip(', ')
-                elif business_country:
+                # Use country code if available, but avoid strict 'location' parameter to prevent SerpApi errors
+                if business_country:
                     params["gl"] = business_country.lower()
                 
                 leaderboard = []
