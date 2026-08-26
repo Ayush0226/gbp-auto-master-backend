@@ -309,22 +309,38 @@ async def run_competitor_scan(req: AdminAuthRequest):
                 real_business_name = None
                 business_city = None
                 business_country = None
+                user_actual_rating = "N/A"
+                user_actual_reviews = "N/A"
                 refresh_token = meta.get('google_refresh_token')
                 import requests
                 if refresh_token:
                     try:
                         access_token = get_offline_access_token(refresh_token)
                         clean_loc_id = loc_id if loc_id.startswith('locations/') else f"locations/{loc_id}"
+                        headers = {"Authorization": f"Bearer {access_token}"}
                         loc_url = f"https://mybusinessbusinessinformation.googleapis.com/v1/{clean_loc_id}?readMask=name,title,storefrontAddress"
-                        loc_resp = requests.get(loc_url, headers={"Authorization": f"Bearer {access_token}"})
+                        loc_resp = requests.get(loc_url, headers=headers)
                         if loc_resp.ok:
                             loc_data = loc_resp.json()
                             real_business_name = loc_data.get('title')
                             address = loc_data.get('storefrontAddress', {})
                             business_city = address.get('locality')
                             business_country = address.get('regionCode')
+                            
+                        acc_url = "https://mybusinessaccountmanagement.googleapis.com/v1/accounts"
+                        acc_resp = requests.get(acc_url, headers=headers)
+                        if acc_resp.ok:
+                            accounts = acc_resp.json().get('accounts', [])
+                            if accounts:
+                                account_name = accounts[0]['name']
+                                rev_url = f"https://mybusiness.googleapis.com/v4/{account_name}/{clean_loc_id}/reviews"
+                                rev_resp = requests.get(rev_url, headers=headers)
+                                if rev_resp.ok:
+                                    rev_data = rev_resp.json()
+                                    user_actual_rating = rev_data.get('averageRating', 0.0)
+                                    user_actual_reviews = rev_data.get('totalReviewCount', len(rev_data.get('reviews', [])))
                     except Exception as e:
-                        print("Failed to fetch real business name/address:", e)
+                        print("Failed to fetch real business name/address/reviews:", e)
 
                 # 1. Fetch user's SEO keywords to know what to search for
                 base_query = real_business_name or "Local Business"
@@ -405,8 +421,8 @@ async def run_competitor_scan(req: AdminAuthRequest):
                         leaderboard.append({
                             "rank": "11+",
                             "name": (real_business_name or meta.get('full_name') or 'Your Business') + " (You)",
-                            "rating": "N/A",
-                            "reviews": "N/A",
+                            "rating": user_actual_rating,
+                            "reviews": user_actual_reviews,
                             "is_user": True
                         })
                 except Exception as e:
@@ -515,14 +531,9 @@ import itertools
 # We use the user-provided Groq key securely from Environment Variables
 def call_groq_with_fallback(api_key: str, messages: list, temperature: float = 0.2):
     client = Groq(api_key=api_key or os.getenv('GROQ_API_KEY'))
-    # List of models from newest/best to oldest fallback
     models = [
-        "openai/gpt-oss-120b",
-        "openai/gpt-oss-20b",
-        "qwen/qwen3.6-27b",
         "llama-3.3-70b-versatile",
         "llama-3.1-8b-instant",
-        "llama3-8b-8192",
         "mixtral-8x7b-32768",
         "gemma2-9b-it"
     ]
@@ -569,10 +580,11 @@ class ChatContextRequest(BaseModel):
 @app.post("/api/ai/chat")
 async def chat_with_assistant(req: ChatContextRequest):
     try:
+        truncated_context = req.context_dump[:15000] if req.context_dump else ""
         messages = [
             {
                 "role": "system",
-                "content": f"You are a brilliant business consultant AI built into the 'GBP Auto Master' platform. Your job is to help the business owner analyze their Google Business Profile, summarize data, and give strategic advice. Keep your answers concise, actionable, and friendly.\n\nHere is the LIVE data context for the user's connected Google Business Profile right now:\n{req.context_dump}"
+                "content": f"You are a brilliant business consultant AI built into the 'GBP Auto Master' platform. Your job is to help the business owner analyze their Google Business Profile, summarize data, and give strategic advice. Keep your answers concise, actionable, and friendly.\n\nHere is the LIVE data context for the user's connected Google Business Profile right now:\n{truncated_context}"
             }
         ]
         
