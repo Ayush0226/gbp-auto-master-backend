@@ -405,8 +405,8 @@ async def run_competitor_scan(req: AdminAuthRequest):
                         leaderboard.append({
                             "rank": "11+",
                             "name": (real_business_name or meta.get('full_name') or 'Your Business') + " (You)",
-                            "rating": 0.0,
-                            "reviews": 0,
+                            "rating": "N/A",
+                            "reviews": "N/A",
                             "is_user": True
                         })
                 except Exception as e:
