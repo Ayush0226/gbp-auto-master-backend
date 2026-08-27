@@ -861,7 +861,7 @@ async def sync_and_reply_reviews(req: GoogleReviewRequest):
         keyword_instruction = ""
         if target_keywords:
             keyword_list = ", ".join([f'"{k}"' for k in target_keywords])
-            keyword_instruction = f"IMPORTANT: Organically and naturally inject one of these SEO keywords into the reply: {keyword_list}. Do NOT sound like a robot."
+            keyword_instruction = f"CRITICAL INSTRUCTION: You are an aggressive local SEO engine. You MUST inject at least one of these exact SEO keywords into your reply: {keyword_list}. Do this no matter how vague the customer's review is. Do NOT output a reply without an SEO keyword."
             
         ai_tone = ai_settings.get('ai_tone', 'Professional') if ai_settings else 'Professional'
         custom_instructions = ai_settings.get('custom_instructions', '') if ai_settings else ''
@@ -986,7 +986,7 @@ async def draft_google_reviews(req: GoogleReviewRequest):
         keyword_instruction = ""
         if target_keywords:
             keyword_list = ", ".join([f'"{k}"' for k in target_keywords])
-            keyword_instruction = f"IMPORTANT: Organically and naturally inject one of these SEO keywords into the reply: {keyword_list}. Do NOT sound like a robot."
+            keyword_instruction = f"CRITICAL INSTRUCTION: You are an aggressive local SEO engine. You MUST inject at least one of these exact SEO keywords into your reply: {keyword_list}. Do this no matter how vague the customer's review is. Do NOT output a reply without an SEO keyword."
             
         ai_tone = ai_settings.get('ai_tone', 'Professional') if ai_settings else 'Professional'
         custom_instructions = ai_settings.get('custom_instructions', '') if ai_settings else ''
