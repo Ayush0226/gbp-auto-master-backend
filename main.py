@@ -535,13 +535,15 @@ def call_groq_with_fallback(api_key: str, messages: list, temperature: float = 0
     
     # Dynamically fetch available models to bypass any decommissioned models
     available_models = client.models.list()
-    model_id = "llama3-8b-8192" # Ultimate fallback
+    model_id = None
     
     for m in available_models.data:
         m_id = m.id.lower()
-        # Prioritize standard LLaMA chat models, exclude guard/vision/classification
-        if 'llama' in m_id and 'guard' not in m_id and 'vision' not in m_id and 'tool' not in m_id:
-            model_id = m.id
+        # Exclude moderation/audio/vision/tool models
+        if any(x in m_id for x in ['guard', 'vision', 'tool', 'whisper', 'embed', 'classifier']):
+            continue
+        model_id = m.id
+        if 'llama' in m_id:
             break
             
     if not model_id and available_models.data:
