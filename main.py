@@ -529,20 +529,15 @@ from groq import Groq
 import itertools
 
 # We use the user-provided Groq key securely from Environment Variables
+# Render Deployment Trigger Update
 def call_groq_with_fallback(api_key: str, messages: list, temperature: float = 0.2):
     client = Groq(api_key=api_key or os.getenv('GROQ_API_KEY'))
-    models = [
-        "llama3-70b-8192",
-        "llama3-8b-8192",
-        "mixtral-8x7b-32768"
-    ]
-    last_e = None
-    for m in models:
-        try:
-            return client.chat.completions.create(messages=messages, model=m, temperature=temperature)
-        except Exception as e:
-            last_e = e
-    raise last_e
+    # Using the most stable Groq free-tier model available
+    return client.chat.completions.create(
+        messages=messages, 
+        model="llama-3.1-8b-instant", 
+        temperature=temperature
+    )
 
 def generate_ai_reply(prompt: str) -> str:
     """
