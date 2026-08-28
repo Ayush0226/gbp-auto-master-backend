@@ -255,7 +255,8 @@ async def get_all_users(req: AdminAuthRequest):
                 "full_name": meta.get("full_name"),
                 "demo_used": meta.get("demo_used", False),
                 "subscriptions": meta.get("subscriptions", {}),
-                "has_google_token": bool(meta.get("google_refresh_token"))
+                "has_google_token": bool(meta.get("google_refresh_token")),
+                "user_metadata": meta
             })
         return {"status": "success", "users": user_list}
     except Exception as e:
