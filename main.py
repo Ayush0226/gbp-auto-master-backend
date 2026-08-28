@@ -1159,6 +1159,8 @@ async def get_google_analytics(req: GoogleReviewRequest):
         clean_loc = req.location_id
         if "locations/" in clean_loc:
             clean_loc = "locations/" + clean_loc.split("locations/")[-1]
+        else:
+            clean_loc = f"locations/{clean_loc}"
             
         url = f"https://businessprofileperformance.googleapis.com/v1/{clean_loc}:fetchMultiDailyMetricsTimeSeries"
         
@@ -1214,6 +1216,8 @@ async def get_google_search_keywords(req: GoogleReviewRequest):
         clean_loc = req.location_id
         if "locations/" in clean_loc:
             clean_loc = "locations/" + clean_loc.split("locations/")[-1]
+        else:
+            clean_loc = f"locations/{clean_loc}"
             
         url = f"https://businessprofileperformance.googleapis.com/v1/{clean_loc}/searchkeywords/impressions/monthly"
         resp = requests.get(url, headers=headers, params=params)
