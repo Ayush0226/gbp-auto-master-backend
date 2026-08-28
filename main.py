@@ -1049,6 +1049,27 @@ async def post_review_reply(req: PostReplyRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+class DeleteReplyRequest(BaseModel):
+    provider_token: str
+    review_id: str
+
+@app.post("/api/google/delete-reply")
+async def delete_review_reply(req: DeleteReplyRequest):
+    """
+    Manually delete a reply from a Google Review.
+    """
+    try:
+        headers = {"Authorization": f"Bearer {req.provider_token}"}
+        reply_url = f"https://mybusiness.googleapis.com/v4/{req.review_id}/reply"
+        reply_resp = requests.delete(reply_url, headers=headers)
+        
+        if reply_resp.ok:
+            return {"status": "success", "message": "Reply deleted successfully!"}
+        else:
+            return {"status": "error", "message": f"Google refused to delete reply: {reply_resp.text}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 class PublishPostRequest(BaseModel):
     provider_token: str
     location_id: str
