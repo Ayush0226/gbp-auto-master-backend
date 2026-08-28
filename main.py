@@ -532,10 +532,10 @@ import itertools
 # Render Deployment Trigger Update
 def call_groq_with_fallback(api_key: str, messages: list, temperature: float = 0.2):
     client = Groq(api_key=api_key or os.getenv('GROQ_API_KEY'))
-    # Using the most stable Groq free-tier model available
+    # Reverted to legacy Llama 3 model that is universally allowed
     return client.chat.completions.create(
         messages=messages, 
-        model="llama-3.1-8b-instant", 
+        model="llama3-8b-8192", 
         temperature=temperature
     )
 
