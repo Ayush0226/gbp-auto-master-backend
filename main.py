@@ -532,10 +532,23 @@ import itertools
 # Render Deployment Trigger Update
 def call_groq_with_fallback(api_key: str, messages: list, temperature: float = 0.2):
     client = Groq(api_key=api_key or os.getenv('GROQ_API_KEY'))
-    # Reverted to legacy Llama 3 model that is universally allowed
+    
+    # Dynamically fetch available models to bypass any decommissioned models
+    available_models = client.models.list()
+    model_id = "llama3-8b-8192" # Ultimate fallback
+    
+    for m in available_models.data:
+        # Prioritize any available LLaMA model
+        if 'llama' in m.id.lower():
+            model_id = m.id
+            break
+            
+    if not model_id and available_models.data:
+        model_id = available_models.data[0].id
+        
     return client.chat.completions.create(
         messages=messages, 
-        model="llama3-8b-8192", 
+        model=model_id, 
         temperature=temperature
     )
 
