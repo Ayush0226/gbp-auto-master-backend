@@ -538,8 +538,9 @@ def call_groq_with_fallback(api_key: str, messages: list, temperature: float = 0
     model_id = "llama3-8b-8192" # Ultimate fallback
     
     for m in available_models.data:
-        # Prioritize any available LLaMA model
-        if 'llama' in m.id.lower():
+        m_id = m.id.lower()
+        # Prioritize standard LLaMA chat models, exclude guard/vision/classification
+        if 'llama' in m_id and 'guard' not in m_id and 'vision' not in m_id and 'tool' not in m_id:
             model_id = m.id
             break
             
