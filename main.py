@@ -562,7 +562,7 @@ def generate_ai_reply(prompt: str) -> str:
     chat_completion = call_groq_with_fallback(os.getenv('GROQ_API_KEY'), [
         {
             "role": "system",
-            "content": "You are a professional customer service AI. Write extremely short (max 2 sentences) and polite replies to customer reviews. NEVER repeat the exact same phrasing. Vary your vocabulary and tone slightly so every reply is unique and personalized."
+            "content": "You are a highly skilled, warm, and professional local business owner. You reply to customer reviews thoughtfully and engagingly. Ensure every reply is unique, polite, and doesn't sound like a generic AI template. Keep it short (max 2-3 sentences)."
         },
         {
             "role": "user",
@@ -853,17 +853,18 @@ async def sync_and_reply_reviews(req: GoogleReviewRequest):
         unreplied = [r for r in reviews if 'reviewReply' not in r]
         unreplied = unreplied[:4]
         
-        # Fetch user_settings from Supabase
+        # Fetch user_settings from Supabase user_metadata per location
         target_keywords = []
         ai_settings = {}
         if supabase:
             try:
-                user_settings = supabase.table('user_settings').select('*').eq('user_id', req.user_id).execute()
-                if user_settings.data:
-                    ai_settings = user_settings.data[0]
+                user_data = supabase.auth.admin.get_user_by_id(req.user_id)
+                if user_data.user:
+                    all_settings = (user_data.user.user_metadata or {}).get("ai_settings", {})
+                    ai_settings = all_settings.get(req.location_id, {})
                     target_keywords = ai_settings.get('active_keywords', [])
             except Exception as e:
-                print("Error fetching settings from Supabase:", e)
+                print("Error fetching settings from Supabase metadata:", e)
                 
         if ai_settings and not ai_settings.get('is_ai_active', True):
             return {"status": "success", "message": "AI Autopilot is currently turned off in settings."}
@@ -871,7 +872,7 @@ async def sync_and_reply_reviews(req: GoogleReviewRequest):
         keyword_instruction = ""
         if target_keywords:
             keyword_list = ", ".join([f'"{k}"' for k in target_keywords])
-            keyword_instruction = f"CRITICAL INSTRUCTION: You are an aggressive local SEO engine. You MUST inject at least one of these exact SEO keywords into your reply: {keyword_list}. Do this no matter how vague the customer's review is. Do NOT output a reply without an SEO keyword."
+            keyword_instruction = f"CRITICAL INSTRUCTION: You MUST organically and naturally weave 1 or 2 of these exact SEO keywords into your reply: {keyword_list}. Ensure the reply sounds genuine, appreciative, and warm, like a real human business owner. Do NOT just say 'thanks for the 5 stars'. Make it a high-quality, thoughtful response."
             
         ai_tone = ai_settings.get('ai_tone', 'Professional') if ai_settings else 'Professional'
         custom_instructions = ai_settings.get('custom_instructions', '') if ai_settings else ''
@@ -996,7 +997,7 @@ async def draft_google_reviews(req: GoogleReviewRequest):
         keyword_instruction = ""
         if target_keywords:
             keyword_list = ", ".join([f'"{k}"' for k in target_keywords])
-            keyword_instruction = f"CRITICAL INSTRUCTION: You are an aggressive local SEO engine. You MUST inject at least one of these exact SEO keywords into your reply: {keyword_list}. Do this no matter how vague the customer's review is. Do NOT output a reply without an SEO keyword."
+            keyword_instruction = f"CRITICAL INSTRUCTION: You MUST organically and naturally weave 1 or 2 of these exact SEO keywords into your reply: {keyword_list}. Ensure the reply sounds genuine, appreciative, and warm, like a real human business owner. Do NOT just say 'thanks for the 5 stars'. Make it a high-quality, thoughtful response."
             
         ai_tone = ai_settings.get('ai_tone', 'Professional') if ai_settings else 'Professional'
         custom_instructions = ai_settings.get('custom_instructions', '') if ai_settings else ''
@@ -1478,7 +1479,7 @@ async def google_reviews_webhook(req: Request):
         keyword_instruction = ""
         if target_keywords:
             keyword_list = ", ".join([f'"{k}"' for k in target_keywords])
-            keyword_instruction = f"IMPORTANT: Organically and naturally inject one of these SEO keywords into the reply: {keyword_list}. Do NOT sound like a robot."
+            keyword_instruction = f"CRITICAL INSTRUCTION: You MUST organically and naturally weave 1 or 2 of these exact SEO keywords into your reply: {keyword_list}. Ensure the reply sounds genuine, appreciative, and warm, like a real human business owner. Do NOT just say 'thanks for the 5 stars'. Make it a high-quality, thoughtful response."
             
         customer_comment = review_data.get('comment', '').strip()
         rating = review_data.get('starRating')
