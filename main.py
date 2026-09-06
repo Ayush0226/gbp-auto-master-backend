@@ -33,8 +33,15 @@ else:
     supabase = None
 
 PRICING_PLANS = {
-    'half_yearly': {'original': 2999, 'discounted': 1999},
-    'yearly': {'original': 5500, 'discounted': 3999}
+    'free':        {'price': 0,    'tokens_monthly': 60,  'max_keywords': 2,  'competitor': False, 'duration_months': 0},
+    'monthly':     {'price': 999,  'tokens_monthly': 350, 'max_keywords': 5,  'competitor': False, 'duration_months': 1},
+    'half_yearly': {'price': 4000, 'tokens_monthly': 600, 'max_keywords': 10, 'competitor': False, 'duration_months': 6},
+    'yearly':      {'price': 8500, 'tokens_monthly': 750, 'max_keywords': 15, 'competitor': True,  'duration_months': 12},
+}
+
+TOP_UP_PACKS = {
+    'standard': {'price': 500, 'tokens': 450, 'name': 'Standard Top-Up'},
+    'bulk':     {'price': 900, 'tokens': 1000, 'name': 'Bulk Top-Up'},
 }
 
 class OrderRequest(BaseModel):
@@ -43,13 +50,120 @@ class OrderRequest(BaseModel):
     user_id: str # Supabase User ID
     location_id: str = None
 
+class OnboardingRequest(BaseModel):
+    user_id: str
+    reply_length: str  # '10-40', '50-90', '100-120'
+    seo_keywords: list[str]
+    full_name: str = None
+
+class DailyClaimRequest(BaseModel):
+    user_id: str
+
+class TokenBalanceRequest(BaseModel):
+    user_id: str
+
+class BatchReplyRequest(BaseModel):
+    user_id: str
+    location_id: str
+    account_id: str
+    access_token: str
+    count: int = 5  # default 5, can be up to 25
+
+class RegenerateReplyRequest(BaseModel):
+    user_id: str
+    review_name: str
+    review_text: str
+    star_rating: str
+    location_id: str
+    access_token: str
+
+class RankReportRequest(BaseModel):
+    user_id: str
+    keyword: str
+    location_id: str
+    access_token: str
+
+class UserProfileRequest(BaseModel):
+    user_id: str
+
+class TopUpRequest(BaseModel):
+    user_id: str
+    pack_id: str = 'standard'
+    promo_code: str = ''
+
+# ─── Token System Helpers ───
+from datetime import date, datetime, timedelta
+
+async def get_token_balance(user_id: str) -> float:
+    """Get current token balance from user_profiles."""
+    result = supabase.table('user_profiles').select('tokens_balance').eq('id', user_id).execute()
+    if result.data:
+        return float(result.data[0]['tokens_balance'])
+    return 0.0
+
+async def deduct_tokens(user_id: str, amount: float, action: str, description: str = '', reference_id: str = '') -> dict:
+    """Deduct tokens. Returns {'success': bool, 'balance': float, 'error': str}."""
+    balance = await get_token_balance(user_id)
+    if balance < amount:
+        return {'success': False, 'balance': balance, 'error': f'Insufficient tokens. Need {amount}, have {balance}'}
+    
+    new_balance = balance - amount
+    supabase.table('user_profiles').update({'tokens_balance': new_balance, 'updated_at': datetime.utcnow().isoformat()}).eq('id', user_id).execute()
+    supabase.table('token_ledger').insert({
+        'user_id': user_id,
+        'amount': -amount,
+        'action': action,
+        'description': description,
+        'reference_id': reference_id
+    }).execute()
+    return {'success': True, 'balance': new_balance, 'error': None}
+
+async def credit_tokens(user_id: str, amount: float, action: str, description: str = '') -> float:
+    """Credit tokens. Returns new balance."""
+    balance = await get_token_balance(user_id)
+    new_balance = balance + amount
+    supabase.table('user_profiles').update({'tokens_balance': new_balance, 'updated_at': datetime.utcnow().isoformat()}).eq('id', user_id).execute()
+    supabase.table('token_ledger').insert({
+        'user_id': user_id,
+        'amount': amount,
+        'action': action,
+        'description': description
+    }).execute()
+    return new_balance
+
+async def ensure_user_profile(user_id: str) -> dict:
+    """Get or create a user_profiles row."""
+    result = supabase.table('user_profiles').select('*').eq('id', user_id).execute()
+    if result.data:
+        return result.data[0]
+    # Create new profile with free plan defaults
+    profile = {
+        'id': user_id,
+        'plan_type': 'free',
+        'tokens_balance': 60,
+        'max_seo_keywords': 2,
+        'seo_keywords': [],
+        'reply_length': '50-90',
+        'demo_completed': False,
+        'onboarding_completed': False
+    }
+    supabase.table('user_profiles').insert(profile).execute()
+    # Log initial token grant
+    supabase.table('token_ledger').insert({
+        'user_id': user_id,
+        'amount': 60,
+        'action': 'onboarding_bonus',
+        'description': 'Welcome bonus - Free plan starting tokens'
+    }).execute()
+    return profile
+
 @app.post("/api/payment/create-order")
 async def create_order(req: OrderRequest):
     if req.plan_id not in PRICING_PLANS:
         raise HTTPException(status_code=400, detail="Invalid plan selected")
         
-    base_price = PRICING_PLANS[req.plan_id]['original']
-    final_price = PRICING_PLANS[req.plan_id]['discounted'] # Default to discounted for first-time users
+    base_price = PRICING_PLANS[req.plan_id]['price']
+    final_price = PRICING_PLANS[req.plan_id]['price'] # Default to discounted for first-time users
     
     if req.promo_code == 'ATYAUNSUHJ':
         final_price = 0
@@ -182,6 +296,72 @@ async def cancel_subscription(req: CancelSubscriptionRequest):
             raise HTTPException(status_code=404, detail="Subscription not found for this location")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/payment/create-topup-order")
+async def create_topup_order(req: TopUpRequest):
+    try:
+        pack = TOP_UP_PACKS.get(req.pack_id)
+        if not pack:
+            raise HTTPException(status_code=400, detail='Invalid pack ID')
+        
+        amount = pack['price']
+        
+        # Apply promo code discount
+        if req.promo_code == 'ATYAUNSUHJ':
+            amount = 0
+        
+        if amount == 0:
+            # Free top-up via promo
+            new_balance = await credit_tokens(req.user_id, pack['tokens'], 'topup_promo', f"Free top-up via promo code {req.promo_code}")
+            return {"status": "free_activated", "tokens_added": pack['tokens'], "balance": new_balance}
+        
+        rzp = razorpay.Client(auth=(os.getenv('RAZORPAY_KEY_ID', ''), os.getenv('RAZORPAY_KEY_SECRET', '')))
+        order = rzp.order.create(data={
+            'amount': amount * 100,
+            'currency': 'INR',
+            'receipt': f'topup_{req.user_id}_{req.pack_id}',
+            'notes': {'user_id': req.user_id, 'pack_id': req.pack_id, 'type': 'topup'}
+        })
+        return {"order_id": order['id'], "amount": amount * 100, "currency": "INR"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/payment/verify-topup")
+async def verify_topup(req: VerifyRequest):
+    try:
+        rzp = razorpay.Client(auth=(os.getenv('RAZORPAY_KEY_ID', ''), os.getenv('RAZORPAY_KEY_SECRET', '')))
+        rzp.utility.verify_payment_signature({
+            'razorpay_order_id': req.razorpay_order_id,
+            'razorpay_payment_id': req.razorpay_payment_id,
+            'razorpay_signature': req.razorpay_signature
+        })
+        # Determine which pack from the order notes
+        order = rzp.order.fetch(req.razorpay_order_id)
+        pack_id = order.get('notes', {}).get('pack_id', 'standard')
+        pack = TOP_UP_PACKS.get(pack_id, TOP_UP_PACKS['standard'])
+        
+        new_balance = await credit_tokens(req.user_id, pack['tokens'], 'topup_purchase', f"Purchased {pack['name']} - Payment: {req.razorpay_payment_id}")
+        return {"status": "success", "tokens_added": pack['tokens'], "balance": new_balance}
+    except razorpay.errors.SignatureVerificationError:
+        raise HTTPException(status_code=400, detail='Invalid payment signature')
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class PromoCodeRequest(BaseModel):
+    code: str
+    user_id: str
+
+PROMO_CODES = {
+    'ATYAUNSUHJ': {'discount_percent': 100, 'description': 'Full free trial'},
+    # Add more promo codes here in the future
+}
+
+@app.post("/api/payment/validate-promo")
+async def validate_promo(req: PromoCodeRequest):
+    promo = PROMO_CODES.get(req.code.upper())
+    if promo:
+        return {"valid": True, "discount_percent": promo['discount_percent'], "description": promo['description']}
+    return {"valid": False, "discount_percent": 0, "description": "Invalid promo code"}
 
 @app.get("/api/payment/key")
 async def get_razorpay_key():
@@ -806,7 +986,7 @@ async def run_google_demo(req: GoogleReviewRequest):
             
             prompt = f"Customer Name: {reviewer_name}\nRating: {star_rating}\nReview: {comment}\n\nWrite a friendly, SEO-optimized reply from the business owner."
             
-            ai_reply = generate_ai_reply(groq_api_key, prompt)
+            ai_reply = generate_ai_reply(prompt)
             
             # Post back to Google
             reply_url = f"https://mybusiness.googleapis.com/v4/{rev['name']}/reply"
@@ -1182,7 +1362,7 @@ async def get_google_analytics(req: GoogleReviewRequest):
         resp = requests.get(url, headers=headers, params=params)
         
         if not resp.ok:
-            return {"status": "error", "message": f"Analytics Fetch Error: {resp.text}"}
+            return {"status": "error", "message": f"Analytics Fetch Error (Tried {url}): {resp.text}"}
             
         return {"status": "success", "analytics": resp.json()}
     except Exception as e:
@@ -1569,5 +1749,292 @@ async def get_competitors(req: CompetitorRequest):
         return {"status": "success", "competitors": competitors}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# ─── User Profile & Onboarding ───
+
+@app.post("/api/user/profile")
+async def get_user_profile(req: UserProfileRequest):
+    profile = await ensure_user_profile(req.user_id)
+    return profile
+
+@app.post("/api/user/onboarding")
+async def save_onboarding(req: OnboardingRequest):
+    profile = await ensure_user_profile(req.user_id)
+    
+    # Validate keyword count (free plan = max 2)
+    plan = PRICING_PLANS.get(profile.get('plan_type', 'free'), PRICING_PLANS['free'])
+    max_kw = plan['max_keywords']
+    keywords = req.seo_keywords[:max_kw]  # Trim to allowed count
+    
+    update_data = {
+        'reply_length': req.reply_length,
+        'seo_keywords': keywords,
+        'onboarding_completed': True,
+        'updated_at': datetime.utcnow().isoformat()
+    }
+    if req.full_name:
+        update_data['full_name'] = req.full_name
+    
+    supabase.table('user_profiles').update(update_data).eq('id', req.user_id).execute()
+    
+    return {'status': 'success', 'keywords_saved': len(keywords), 'max_allowed': max_kw}
+
+# ─── Token System ───
+
+@app.post("/api/tokens/claim-daily")
+async def claim_daily_tokens(req: DailyClaimRequest):
+    profile = await ensure_user_profile(req.user_id)
+    today = date.today().isoformat()
+    
+    if profile.get('last_daily_claim') == today:
+        return {'status': 'already_claimed', 'balance': float(profile['tokens_balance'])}
+    
+    new_balance = await credit_tokens(req.user_id, 2.0, 'daily_reward', f'Daily login reward for {today}')
+    supabase.table('user_profiles').update({'last_daily_claim': today}).eq('id', req.user_id).execute()
+    
+    return {'status': 'claimed', 'tokens_added': 2, 'balance': new_balance}
+
+@app.post("/api/tokens/balance")
+async def get_token_balance_endpoint(req: TokenBalanceRequest):
+    profile = await ensure_user_profile(req.user_id)
+    
+    # Get recent ledger entries
+    ledger = supabase.table('token_ledger').select('*').eq('user_id', req.user_id).order('created_at', desc=True).limit(50).execute()
+    
+    return {
+        'balance': float(profile['tokens_balance']),
+        'plan_type': profile.get('plan_type', 'free'),
+        'last_daily_claim': profile.get('last_daily_claim'),
+        'history': ledger.data if ledger.data else []
+    }
+
+# ─── Batch Review Reply with Token System ───
+
+@app.post("/api/reviews/batch-reply")
+async def batch_reply_reviews(req: BatchReplyRequest):
+    count = min(req.count, 25)  # Cap at 25
+    token_cost = count * 2.5
+    
+    # Check token balance
+    balance = await get_token_balance(req.user_id)
+    if balance < token_cost:
+        # Calculate how many they CAN afford
+        affordable = int(balance // 2.5)
+        return {
+            'status': 'insufficient_tokens',
+            'balance': balance,
+            'required': token_cost,
+            'affordable_count': affordable,
+            'message': f'You need {token_cost} tokens but only have {balance}. You can reply to {affordable} reviews.'
+        }
+    
+    # Get user profile for settings
+    profile = await ensure_user_profile(req.user_id)
+    reply_length = profile.get('reply_length', '50-90')
+    seo_keywords = profile.get('seo_keywords', [])
+    
+    # Get AI settings
+    user_data = supabase.auth.admin.get_user_by_id(req.user_id)
+    ai_settings = user_data.user.user_metadata.get('ai_settings', {}).get(req.location_id, {})
+    ai_tone = ai_settings.get('ai_tone', 'Professional')
+    custom_instructions = ai_settings.get('custom_instructions', '')
+    reply_to_negative = ai_settings.get('reply_to_1_star', True)
+    
+    # Fetch reviews from Google
+    headers = {'Authorization': f'Bearer {req.access_token}'}
+    reviews_url = f'https://mybusiness.googleapis.com/v4/{req.account_id}/{req.location_id}/reviews'
+    resp = requests.get(reviews_url, headers=headers)
+    
+    if resp.status_code != 200:
+        raise HTTPException(status_code=resp.status_code, detail='Failed to fetch reviews from Google')
+    
+    all_reviews = resp.json().get('reviews', [])
+    unreplied = [r for r in all_reviews if 'reviewReply' not in r]
+    
+    # Filter negative reviews if setting is off
+    if not reply_to_negative:
+        unreplied = [r for r in unreplied if r.get('starRating', 'FIVE') not in ('ONE', 'TWO')]
+    
+    to_reply = unreplied[:count]
+    
+    if not to_reply:
+        return {'status': 'no_reviews', 'message': 'No unreplied reviews found', 'replied': []}
+    
+    # Build reply length instruction
+    length_map = {'10-40': '10 to 40 words', '50-90': '50 to 90 words', '100-120': '100 to 120 words'}
+    length_instruction = length_map.get(reply_length, '50 to 90 words')
+    
+    replied = []
+    actual_cost = 0
+    
+    groq_api_key = os.getenv('GROQ_API_KEY', '')
+    
+    for review in to_reply:
+        reviewer = review.get('reviewer', {}).get('displayName', 'Customer')
+        comment = review.get('comment', '')
+        stars = review.get('starRating', 'FIVE')
+        review_name = review.get('name', '')
+        
+        # Build AI prompt
+        keyword_instruction = ''
+        if seo_keywords:
+            keyword_instruction = f"\nCRITICAL: Organically weave 1-2 of these SEO keywords into your reply: {', '.join(seo_keywords)}"
+        
+        prompt = f"""You are a warm, professional local business owner replying to a Google review.
+Tone: {ai_tone}
+Reply length: STRICTLY {length_instruction}.
+{keyword_instruction}
+{f'Additional instructions: {custom_instructions}' if custom_instructions else ''}
+
+Review by {reviewer} ({stars} stars):
+\"{comment}\"
+
+Write ONLY the reply text, nothing else."""
+        
+        try:
+            ai_reply_completion = call_groq_with_fallback(groq_api_key, [{"role": "user", "content": prompt}])
+            ai_reply = ai_reply_completion.choices[0].message.content
+            
+            # Post reply to Google
+            reply_url = f'https://mybusiness.googleapis.com/v4/{review_name}/reply'
+            put_resp = requests.put(reply_url, headers=headers, json={'comment': ai_reply})
+            
+            if put_resp.status_code in (200, 201):
+                actual_cost += 2.5
+                replied.append({
+                    'review_name': review_name,
+                    'reviewer': reviewer,
+                    'stars': stars,
+                    'comment': comment,
+                    'ai_reply': ai_reply,
+                    'status': 'published'
+                })
+            else:
+                replied.append({
+                    'review_name': review_name,
+                    'reviewer': reviewer,
+                    'stars': stars,
+                    'comment': comment,
+                    'ai_reply': ai_reply,
+                    'status': 'failed',
+                    'error': put_resp.text
+                })
+        except Exception as e:
+            replied.append({
+                'review_name': review_name,
+                'reviewer': reviewer,
+                'status': 'error',
+                'error': str(e)
+            })
+    
+    # Deduct tokens only for successful replies
+    if actual_cost > 0:
+        await deduct_tokens(req.user_id, actual_cost, 'review_reply', f'Replied to {len([r for r in replied if r["status"]=="published"])} reviews', req.location_id)
+    
+    final_balance = await get_token_balance(req.user_id)
+    
+    return {
+        'status': 'success',
+        'replied': replied,
+        'tokens_used': actual_cost,
+        'balance': final_balance,
+        'total_unreplied_remaining': len(unreplied) - len(to_reply)
+    }
+
+@app.post("/api/reviews/regenerate-reply")
+async def regenerate_reply(req: RegenerateReplyRequest):
+    # Check tokens
+    result = await deduct_tokens(req.user_id, 2.5, 'review_reply', f'Regenerated reply for review', req.review_name)
+    if not result['success']:
+        raise HTTPException(status_code=402, detail=result['error'])
+    
+    profile = await ensure_user_profile(req.user_id)
+    reply_length = profile.get('reply_length', '50-90')
+    seo_keywords = profile.get('seo_keywords', [])
+    
+    length_map = {'10-40': '10 to 40 words', '50-90': '50 to 90 words', '100-120': '100 to 120 words'}
+    length_instruction = length_map.get(reply_length, '50 to 90 words')
+    
+    keyword_instruction = ''
+    if seo_keywords:
+        keyword_instruction = f"\nCRITICAL: Organically weave 1-2 of these SEO keywords: {', '.join(seo_keywords)}"
+    
+    prompt = f"""You are a warm, professional local business owner replying to a Google review.
+Reply length: STRICTLY {length_instruction}.
+{keyword_instruction}
+
+Review ({req.star_rating} stars):
+\"{req.review_text}\"
+
+Write ONLY the reply text, nothing else."""
+    
+    groq_api_key = os.getenv('GROQ_API_KEY', '')
+    ai_reply_completion = call_groq_with_fallback(groq_api_key, [{"role": "user", "content": prompt}])
+    ai_reply = ai_reply_completion.choices[0].message.content
+    
+    # Post to Google
+    headers = {'Authorization': f'Bearer {req.access_token}'}
+    reply_url = f'https://mybusiness.googleapis.com/v4/{req.review_name}/reply'
+    put_resp = requests.put(reply_url, headers=headers, json={'comment': ai_reply})
+    
+    return {
+        'status': 'published' if put_resp.status_code in (200, 201) else 'failed',
+        'ai_reply': ai_reply,
+        'balance': result['balance']
+    }
+
+# ─── Rank Report with Token System ───
+
+@app.post("/api/rank/generate-report")
+async def generate_rank_report(req: RankReportRequest):
+    # Check 15 tokens
+    result = await deduct_tokens(req.user_id, 15.0, 'rank_report', f'Rank analysis for keyword: {req.keyword}', req.keyword)
+    if not result['success']:
+        raise HTTPException(status_code=402, detail=result['error'])
+    
+    # Use existing competitor scan logic with the specific keyword
+    serp_api_key = os.getenv('SERPAPI_KEY', '')
+    
+    # Get business info from Google
+    headers = {'Authorization': f'Bearer {req.access_token}'}
+    loc_url = f'https://mybusinessbusinessinformation.googleapis.com/v1/{req.location_id}?readMask=title,storefrontAddress'
+    loc_resp = requests.get(loc_url, headers=headers)
+    
+    business_title = 'Your Business'
+    address = ''
+    if loc_resp.status_code == 200:
+        loc_data = loc_resp.json()
+        business_title = loc_data.get('title', 'Your Business')
+        addr = loc_data.get('storefrontAddress', {})
+        address = ', '.join(filter(None, [addr.get('locality', ''), addr.get('administrativeArea', ''), addr.get('regionCode', '')]))
+    
+    # Generate AI analysis
+    prompt = f"""You are an expert local SEO analyst. Generate a detailed rank analysis report.
+
+Business: {business_title}
+Location: {address}
+Target SEO Keyword: "{req.keyword}"
+
+Provide:
+1. KEYWORD STRENGTH ANALYSIS: How competitive is this keyword in this market?
+2. CURRENT VISIBILITY ESTIMATE: Based on the business name and location, estimate visibility for this keyword.
+3. OPTIMIZATION SCORE: Rate 1-10 how well this keyword fits the business.
+4. ACTION ITEMS: 5 specific actions to improve ranking for this keyword.
+5. PROJECTED TIMELINE: Realistic timeline to see ranking improvements.
+
+Format as a structured report with clear headers."""
+    
+    groq_api_key = os.getenv('GROQ_API_KEY', '')
+    report_completion = call_groq_with_fallback(groq_api_key, [{"role": "user", "content": prompt}])
+    report = report_completion.choices[0].message.content
+    
+    return {
+        'status': 'success',
+        'keyword': req.keyword,
+        'business': business_title,
+        'location': address,
+        'report': report,
+        'balance': result['balance']
+    }
 
 
