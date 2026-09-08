@@ -376,6 +376,26 @@ class SaveAISettingsRequest(BaseModel):
     location_id: str
     settings: dict
 
+class GetAISettingsRequest(BaseModel):
+    user_id: str
+    location_id: str
+
+@app.post("/api/user/get-ai-settings")
+async def get_ai_settings(req: GetAISettingsRequest):
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    try:
+        user_data = supabase.auth.admin.get_user_by_id(req.user_id)
+        if not user_data.user:
+            raise HTTPException(status_code=404, detail="User not found")
+            
+        user_meta = user_data.user.user_metadata or {}
+        ai_settings = user_meta.get("ai_settings", {})
+        
+        return ai_settings.get(req.location_id, {})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/user/save-ai-settings")
 async def save_ai_settings(req: SaveAISettingsRequest):
     if not supabase:
