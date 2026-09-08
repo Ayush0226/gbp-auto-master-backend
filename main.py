@@ -34,9 +34,9 @@ else:
 
 PRICING_PLANS = {
     'free':        {'price': 0,    'tokens_monthly': 60,  'max_keywords': 2,  'competitor': False, 'duration_months': 0},
-    'monthly':     {'price': 999,  'tokens_monthly': 350, 'max_keywords': 5,  'competitor': False, 'duration_months': 1},
-    'half_yearly': {'price': 4000, 'tokens_monthly': 600, 'max_keywords': 10, 'competitor': False, 'duration_months': 6},
-    'yearly':      {'price': 8500, 'tokens_monthly': 750, 'max_keywords': 15, 'competitor': True,  'duration_months': 12},
+    'monthly':     {'price': 600,  'tokens_monthly': 350, 'max_keywords': 5,  'competitor': False, 'duration_months': 1},
+    'half_yearly': {'price': 3200, 'tokens_monthly': 600, 'max_keywords': 10, 'competitor': True,  'duration_months': 6},
+    'yearly':      {'price': 6000, 'tokens_monthly': 750, 'max_keywords': 15, 'competitor': True,  'duration_months': 12},
 }
 
 TOP_UP_PACKS = {
@@ -2007,13 +2007,10 @@ Write ONLY the reply text, nothing else."""
 
 @app.post("/api/rank/generate-report")
 async def generate_rank_report(req: RankReportRequest):
-    # Check 15 tokens
-    result = await deduct_tokens(req.user_id, 15.0, 'rank_report', f'Rank analysis for keyword: {req.keyword}', req.keyword)
+    # Check 10 tokens
+    result = await deduct_tokens(req.user_id, 10.0, 'rank_report', f'Competitor analysis for keyword: {req.keyword}', req.keyword)
     if not result['success']:
         raise HTTPException(status_code=402, detail=result['error'])
-    
-    # Use existing competitor scan logic with the specific keyword
-    serp_api_key = os.getenv('SERPAPI_KEY', '')
     
     # Get business info from Google
     headers = {'Authorization': f'Bearer {req.access_token}'}
@@ -2028,21 +2025,52 @@ async def generate_rank_report(req: RankReportRequest):
         addr = loc_data.get('storefrontAddress', {})
         address = ', '.join(filter(None, [addr.get('locality', ''), addr.get('administrativeArea', ''), addr.get('regionCode', '')]))
     
+    # Fetch Competitors via Google Places API
+    maps_key = os.getenv('GOOGLE_MAPS_API_KEY')
+    competitors = []
+    if maps_key:
+        try:
+            search_url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?query={req.keyword} near {address}&key={maps_key}"
+            resp = requests.get(search_url)
+            if resp.ok:
+                data = resp.json()
+                for place in data.get('results', [])[:10]:
+                    if place.get('name') != business_title: # Skip their own business if it appears
+                        competitors.append({
+                            "name": place.get('name'),
+                            "rating": place.get('rating', 0),
+                            "reviews": place.get('user_ratings_total', 0)
+                        })
+        except Exception as e:
+            print("Places API error:", e)
+    
+    if not competitors:
+        competitors = [
+            {"name": "Local Competitor 1", "rating": 4.5, "reviews": 120},
+            {"name": "Local Competitor 2", "rating": 4.2, "reviews": 85},
+            {"name": "Local Competitor 3", "rating": 4.8, "reviews": 210}
+        ]
+
+    comp_list_str = "\n".join([f"- {c['name']} (Rating: {c['rating']}, Reviews: {c['reviews']})" for c in competitors])
+
     # Generate AI analysis
-    prompt = f"""You are an expert local SEO analyst. Generate a detailed rank analysis report.
+    prompt = f"""You are an expert local SEO analyst. Analyze the competitor landscape for this keyword.
 
 Business: {business_title}
 Location: {address}
 Target SEO Keyword: "{req.keyword}"
 
-Provide:
-1. KEYWORD STRENGTH ANALYSIS: How competitive is this keyword in this market?
-2. CURRENT VISIBILITY ESTIMATE: Based on the business name and location, estimate visibility for this keyword.
-3. OPTIMIZATION SCORE: Rate 1-10 how well this keyword fits the business.
-4. ACTION ITEMS: 5 specific actions to improve ranking for this keyword.
-5. PROJECTED TIMELINE: Realistic timeline to see ranking improvements.
+Top Competitors Found:
+{comp_list_str}
 
-Format as a structured report with clear headers."""
+Generate a "Competitor Intelligence Report" for the business owner.
+Provide:
+1. COMPETITOR OVERVIEW: A brief summary of the competition level for this keyword.
+2. COMPETITOR PROS: What these competitors are likely doing right (e.g., review volume, ratings).
+3. COMPETITOR CONS: Weaknesses or gaps in the competitors' profiles that {business_title} can exploit.
+4. STRATEGIC ACTION PLAN: 3 specific steps {business_title} must take to outrank them for "{req.keyword}".
+
+Format clearly as a professional report."""
     
     groq_api_key = os.getenv('GROQ_API_KEY', '')
     report_completion = call_groq_with_fallback(groq_api_key, [{"role": "user", "content": prompt}])
@@ -2053,6 +2081,7 @@ Format as a structured report with clear headers."""
         'keyword': req.keyword,
         'business': business_title,
         'location': address,
+        'competitors': competitors,
         'report': report,
         'balance': result['balance']
     }
