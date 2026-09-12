@@ -936,6 +936,14 @@ async def get_google_locations(req: GoogleSyncRequest):
                 "plan_details": subs.get(loc_id, None)
             })
             
+        # Cache locations in user_metadata so the UI can load them instantly on refresh
+        try:
+            current_meta = user_data.user.user_metadata if user_data.user else {}
+            current_meta['cached_locations'] = dashboard_locations
+            supabase.auth.admin.update_user_by_id(req.user_id, {"user_metadata": current_meta})
+        except Exception as e:
+            print("Failed to cache locations:", e)
+            
         return {
             "status": "success", 
             "locations": dashboard_locations
