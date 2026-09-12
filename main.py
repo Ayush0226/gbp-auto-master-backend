@@ -58,9 +58,16 @@ class OnboardingRequest(BaseModel):
 
 class DailyClaimRequest(BaseModel):
     user_id: str
+    location_id: str
 
 class TokenBalanceRequest(BaseModel):
     user_id: str
+    location_id: str
+
+class PromoCodeRequest(BaseModel):
+    user_id: str
+    location_id: str
+    promo_code: str
 
 class BatchReplyRequest(BaseModel):
     user_id: str
@@ -94,42 +101,70 @@ class TopUpRequest(BaseModel):
 # ─── Token System Helpers ───
 from datetime import date, datetime, timedelta
 
-async def get_token_balance(user_id: str) -> float:
-    """Get current token balance from user_profiles."""
-    result = supabase.table('user_profiles').select('tokens_balance').eq('id', user_id).execute()
+async def get_token_balance(location_id: str, user_id: str) -> float:
+    """Get current token balance from location_profiles."""
+    result = supabase.table('location_profiles').select('tokens_balance').eq('location_id', location_id).execute()
     if result.data:
         return float(result.data[0]['tokens_balance'])
-    return 0.0
+    
+    # If not found, ensure it exists
+    await ensure_location_profile(location_id, user_id)
+    return 60.0
 
-async def deduct_tokens(user_id: str, amount: float, action: str, description: str = '', reference_id: str = '') -> dict:
+async def deduct_tokens(location_id: str, user_id: str, amount: float, action: str, description: str = '', reference_id: str = '') -> dict:
     """Deduct tokens. Returns {'success': bool, 'balance': float, 'error': str}."""
-    balance = await get_token_balance(user_id)
+    balance = await get_token_balance(location_id, user_id)
     if balance < amount:
         return {'success': False, 'balance': balance, 'error': f'Insufficient tokens. Need {amount}, have {balance}'}
     
     new_balance = balance - amount
-    supabase.table('user_profiles').update({'tokens_balance': new_balance, 'updated_at': datetime.utcnow().isoformat()}).eq('id', user_id).execute()
-    supabase.table('token_ledger').insert({
+    supabase.table('location_profiles').update({'tokens_balance': new_balance, 'updated_at': datetime.utcnow().isoformat()}).eq('location_id', location_id).execute()
+    supabase.table('location_token_ledger').insert({
+        'location_id': location_id,
         'user_id': user_id,
         'amount': -amount,
-        'action': action,
-        'description': description,
-        'reference_id': reference_id
+        'action_type': action,
+        'description': description
     }).execute()
     return {'success': True, 'balance': new_balance, 'error': None}
 
-async def credit_tokens(user_id: str, amount: float, action: str, description: str = '') -> float:
+async def credit_tokens(location_id: str, user_id: str, amount: float, action: str, description: str = '') -> float:
     """Credit tokens. Returns new balance."""
-    balance = await get_token_balance(user_id)
+    balance = await get_token_balance(location_id, user_id)
     new_balance = balance + amount
-    supabase.table('user_profiles').update({'tokens_balance': new_balance, 'updated_at': datetime.utcnow().isoformat()}).eq('id', user_id).execute()
-    supabase.table('token_ledger').insert({
+    supabase.table('location_profiles').update({'tokens_balance': new_balance, 'updated_at': datetime.utcnow().isoformat()}).eq('location_id', location_id).execute()
+    supabase.table('location_token_ledger').insert({
+        'location_id': location_id,
         'user_id': user_id,
         'amount': amount,
-        'action': action,
+        'action_type': action,
         'description': description
     }).execute()
     return new_balance
+
+async def ensure_location_profile(location_id: str, user_id: str) -> dict:
+    """Get or create a location_profiles row."""
+    result = supabase.table('location_profiles').select('*').eq('location_id', location_id).execute()
+    if result.data:
+        return result.data[0]
+    
+    # Create new location profile with free plan defaults
+    profile = {
+        'location_id': location_id,
+        'user_id': user_id,
+        'plan_type': 'free',
+        'tokens_balance': 60
+    }
+    supabase.table('location_profiles').insert(profile).execute()
+    # Log initial token grant
+    supabase.table('location_token_ledger').insert({
+        'location_id': location_id,
+        'user_id': user_id,
+        'amount': 60,
+        'action_type': 'grant_monthly',
+        'description': 'Initial free tier allocation'
+    }).execute()
+    return profile
 
 async def ensure_user_profile(user_id: str) -> dict:
     """Get or create a user_profiles row."""
@@ -243,24 +278,32 @@ async def verify_payment(req: VerifyRequest):
         if not supabase:
             raise HTTPException(status_code=500, detail="Supabase not configured")
             
-        # Fetch current metadata to append location
-        user_data = supabase.auth.admin.get_user_by_id(req.user_id)
-        user_meta = user_data.user.user_metadata if user_data.user else {}
-        subs = user_meta.get("subscriptions", {})
-        
         if req.location_id and req.plan_id:
             import datetime as dt
             now = dt.datetime.now()
-            months = 1 if req.plan_id == 'monthly' else (6 if req.plan_id == 'half' else 12)
+            
+            # Map plan_id to correct key
+            if req.plan_id == 'half':
+                plan_key = 'half_yearly'
+            elif req.plan_id == 'annual':
+                plan_key = 'yearly'
+            else:
+                plan_key = req.plan_id
+                
+            plan_info = PRICING_PLANS.get(plan_key, PRICING_PLANS['monthly'])
+            months = plan_info.get('duration_months', 1)
             expires_at = (now + dt.timedelta(days=30*months)).isoformat()
             
-            subs[req.location_id] = {
-                "plan_id": req.plan_id,
-                "expires_at": expires_at,
-                "status": "active"
-            }
+            # Update location profile with plan and add tokens
+            supabase.table('location_profiles').upsert({
+                'location_id': req.location_id,
+                'user_id': req.user_id,
+                'plan_type': plan_key,
+                'subscription_end': expires_at,
+                'updated_at': now.isoformat()
+            }).execute()
             
-            supabase.auth.admin.update_user_by_id(req.user_id, {"user_metadata": {"subscriptions": subs}})
+            await credit_tokens(req.location_id, req.user_id, plan_info['tokens_monthly'], 'subscription_purchase', f"Purchased {plan_key} plan")
         
         return {"status": "success", "message": "Payment verified and subscription activated"}
     except razorpay.errors.SignatureVerificationError:
@@ -340,7 +383,7 @@ async def verify_topup(req: VerifyRequest):
         pack_id = order.get('notes', {}).get('pack_id', 'standard')
         pack = TOP_UP_PACKS.get(pack_id, TOP_UP_PACKS['standard'])
         
-        new_balance = await credit_tokens(req.user_id, pack['tokens'], 'topup_purchase', f"Purchased {pack['name']} - Payment: {req.razorpay_payment_id}")
+        new_balance = await credit_tokens(req.location_id, req.user_id, pack['tokens'], 'topup_purchase', f"Purchased {pack['name']} - Payment: {req.razorpay_payment_id}")
         return {"status": "success", "tokens_added": pack['tokens'], "balance": new_balance}
     except razorpay.errors.SignatureVerificationError:
         raise HTTPException(status_code=400, detail='Invalid payment signature')
@@ -1671,6 +1714,11 @@ async def google_reviews_webhook(req: Request):
         if 'reviewReply' in review_data:
             return {"status": "ignored", "reason": "Already replied"}
             
+        # Check token balance
+        balance = await get_token_balance(loc_id_short, target_user.id)
+        if balance < 2.5:
+            return {"status": "ignored", "reason": "Insufficient tokens"}
+            
         # Fetch target keywords from Supabase metadata
         target_keywords = []
         if supabase and target_user:
@@ -1700,6 +1748,7 @@ async def google_reviews_webhook(req: Request):
         reply_resp = requests.put(reply_url, headers=headers, json={"comment": ai_reply})
         
         if reply_resp.ok:
+            await deduct_tokens(loc_id_short, target_user.id, 2.5, 'webhook_reply', f'Auto-replied to review', review_name)
             return {"status": "success", "message": "Instantly replied to review!"}
         else:
             return {"status": "error", "reason": reply_resp.text}
@@ -1803,30 +1852,38 @@ async def save_onboarding(req: OnboardingRequest):
 
 @app.post("/api/tokens/claim-daily")
 async def claim_daily_tokens(req: DailyClaimRequest):
-    profile = await ensure_user_profile(req.user_id)
+    profile = await ensure_location_profile(req.location_id, req.user_id)
     today = date.today().isoformat()
     
     if profile.get('last_daily_claim') == today:
-        return {'status': 'already_claimed', 'balance': float(profile['tokens_balance'])}
+        return {'status': 'already_claimed', 'balance': float(profile.get('tokens_balance', 0))}
     
-    new_balance = await credit_tokens(req.user_id, 2.0, 'daily_reward', f'Daily login reward for {today}')
-    supabase.table('user_profiles').update({'last_daily_claim': today}).eq('id', req.user_id).execute()
+    new_balance = await credit_tokens(req.location_id, req.user_id, 2.0, 'daily_reward', f'Daily login reward for {today}')
+    supabase.table('location_profiles').update({'last_daily_claim': today}).eq('location_id', req.location_id).execute()
     
     return {'status': 'claimed', 'tokens_added': 2, 'balance': new_balance}
 
 @app.post("/api/tokens/balance")
 async def get_token_balance_endpoint(req: TokenBalanceRequest):
-    profile = await ensure_user_profile(req.user_id)
+    profile = await ensure_location_profile(req.location_id, req.user_id)
     
-    # Get recent ledger entries
-    ledger = supabase.table('token_ledger').select('*').eq('user_id', req.user_id).order('created_at', desc=True).limit(50).execute()
+    # Get recent ledger entries for this location
+    ledger = supabase.table('location_token_ledger').select('*').eq('location_id', req.location_id).order('created_at', desc=True).limit(50).execute()
     
     return {
-        'balance': float(profile['tokens_balance']),
+        'balance': float(profile.get('tokens_balance', 0)),
         'plan_type': profile.get('plan_type', 'free'),
-        'last_daily_claim': profile.get('last_daily_claim'),
         'history': ledger.data if ledger.data else []
     }
+
+@app.post("/api/tokens/redeem-promo")
+async def redeem_promo_code(req: PromoCodeRequest):
+    # Only allow "ATYAUNSUHJ" or similar promo codes to add 1000 tokens
+    if req.promo_code.upper() != "ATYAUNSUHJ":
+        raise HTTPException(status_code=400, detail="Invalid promo code")
+        
+    new_balance = await credit_tokens(req.location_id, req.user_id, 1000.0, 'promo_code', 'Redeemed promo code')
+    return {'status': 'success', 'tokens_added': 1000, 'new_balance': new_balance}
 
 # ─── Batch Review Reply with Token System ───
 
@@ -1836,7 +1893,7 @@ async def batch_reply_reviews(req: BatchReplyRequest):
     token_cost = count * 2.5
     
     # Check token balance
-    balance = await get_token_balance(req.user_id)
+    balance = await get_token_balance(req.location_id, req.user_id)
     if balance < token_cost:
         # Calculate how many they CAN afford
         affordable = int(balance // 2.5)
@@ -1949,9 +2006,9 @@ Write ONLY the reply text, nothing else."""
     
     # Deduct tokens only for successful replies
     if actual_cost > 0:
-        await deduct_tokens(req.user_id, actual_cost, 'review_reply', f'Replied to {len([r for r in replied if r["status"]=="published"])} reviews', req.location_id)
+        await deduct_tokens(req.location_id, req.user_id, actual_cost, 'review_reply', f'Replied to {len([r for r in replied if r["status"]=="published"])} reviews', req.location_id)
     
-    final_balance = await get_token_balance(req.user_id)
+    final_balance = await get_token_balance(req.location_id, req.user_id)
     
     return {
         'status': 'success',
@@ -1964,7 +2021,7 @@ Write ONLY the reply text, nothing else."""
 @app.post("/api/reviews/regenerate-reply")
 async def regenerate_reply(req: RegenerateReplyRequest):
     # Check tokens
-    result = await deduct_tokens(req.user_id, 2.5, 'review_reply', f'Regenerated reply for review', req.review_name)
+    result = await deduct_tokens(req.location_id, req.user_id, 2.5, 'review_reply', f'Regenerated reply for review', req.review_name)
     if not result['success']:
         raise HTTPException(status_code=402, detail=result['error'])
     
@@ -2008,7 +2065,7 @@ Write ONLY the reply text, nothing else."""
 @app.post("/api/rank/generate-report")
 async def generate_rank_report(req: RankReportRequest):
     # Check 10 tokens
-    result = await deduct_tokens(req.user_id, 10.0, 'rank_report', f'Competitor analysis for keyword: {req.keyword}', req.keyword)
+    result = await deduct_tokens(req.location_id, req.user_id, 10.0, 'rank_report', f'Competitor analysis for keyword: {req.keyword}', req.keyword)
     if not result['success']:
         raise HTTPException(status_code=402, detail=result['error'])
     
