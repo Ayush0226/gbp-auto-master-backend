@@ -1,0 +1,127 @@
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from fastapi import HTTPException
+
+import main
+
+ORIGINAL_ACCOUNT = main.ensure_user_profile
+ORIGINAL_BALANCE = main.get_token_balance
+ORIGINAL_LOCATION = main.ensure_location_profile
+
+
+@pytest.fixture(autouse=True)
+def no_live_services(monkeypatch):
+    # Every external dependency is replaced; tests must never contact production.
+    monkeypatch.setattr(main,'supabase',MagicMock())
+    monkeypatch.setattr(main,'requests',MagicMock())
+    monkeypatch.setattr(main,'generate_ai_reply',MagicMock(return_value='Thank you!'))
+    monkeypatch.setattr(main,'reserve_operation',MagicMock(return_value={'success':True}))
+    monkeypatch.setattr(main,'finish_operation',MagicMock())
+    monkeypatch.setattr(main,'ensure_location_profile',AsyncMock(return_value={'account_id':'accounts/1','plan_type':'yearly'}))
+    monkeypatch.setattr(main,'get_token_balance',AsyncMock(return_value=100))
+
+
+def run_reply():
+    return asyncio.run(main.generate_and_publish('owner','locations/123','google-token',{'name':'accounts/1/locations/123/reviews/abc'},{}))
+
+
+def test_generation_failure_refunds(monkeypatch):
+    main.generate_ai_reply.side_effect=RuntimeError('AI unavailable')
+    with pytest.raises(RuntimeError): run_reply()
+    main.finish_operation.assert_called_once_with('reply:accounts/1/locations/123/reviews/abc',False)
+    main.requests.put.assert_not_called()
+
+
+def test_google_rejection_refunds():
+    main.requests.put.return_value.ok=False
+    with pytest.raises(HTTPException): run_reply()
+    main.finish_operation.assert_called_once_with('reply:accounts/1/locations/123/reviews/abc',False)
+
+
+def test_ambiguous_google_delivery_retains_reservation():
+    main.requests.put.side_effect=TimeoutError()
+    with pytest.raises(HTTPException): run_reply()
+    main.finish_operation.assert_not_called()
+
+
+def test_successful_reply_finalizes_charge():
+    main.requests.put.return_value.ok=True
+    assert run_reply()['status']=='published'
+    main.finish_operation.assert_called_once_with('reply:accounts/1/locations/123/reviews/abc',True)
+
+
+def test_duplicate_reply_does_not_generate_or_publish():
+    main.reserve_operation.side_effect=HTTPException(409,'Already reserved')
+    with pytest.raises(HTTPException): run_reply()
+    main.generate_ai_reply.assert_not_called()
+    main.requests.put.assert_not_called()
+
+
+def test_promo_models_are_distinct():
+    req=main.PromoCodeRequest(user_id='owner',location_id='123',promo_code='CODE')
+    assert req.location_id=='locations/123'
+    assert req.promo_code=='CODE'
+    assert main.ValidatePromoRequest(user_id='owner',code='CODE').code=='CODE'
+
+
+def test_empty_competitor_results_refund(monkeypatch):
+    monkeypatch.setenv('GOOGLE_MAPS_API_KEY','test')
+    main.requests.get.side_effect=[
+        SimpleNamespace(ok=True,json=lambda:{'title':'Business','storefrontAddress':{'locality':'City'}}),
+        SimpleNamespace(ok=True,json=lambda:{'status':'ZERO_RESULTS','results':[]})]
+    req=main.RankReportRequest(user_id='owner',location_id='123',keyword='plumber',access_token='token')
+    with pytest.raises(HTTPException): asyncio.run(main.generate_rank_report(req))
+    assert main.finish_operation.call_args.args[1] is False
+
+
+def test_batch_size_is_bounded():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        main.BatchReplyRequest(user_id='owner',location_id='123',account_id='accounts/1',access_token='token',count=-1)
+
+
+def test_account_rpc_result_is_awaited_before_reading_data():
+    main.supabase.rpc.return_value.execute.return_value.data={'tokens_balance':200,'id':'owner'}
+    assert asyncio.run(ORIGINAL_ACCOUNT('owner'))['tokens_balance']==200
+
+
+def test_profiles_share_the_same_account_balance(monkeypatch):
+    monkeypatch.setattr(main,'ensure_user_profile',AsyncMock(return_value={'tokens_balance':73}))
+    assert asyncio.run(ORIGINAL_BALANCE('locations/1','owner'))==73
+    assert asyncio.run(ORIGINAL_BALANCE('locations/2','owner'))==73
+
+
+def test_location_lookup_awaits_database_result():
+    main.supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data=[{'plan_type':'free'}]
+    assert asyncio.run(ORIGINAL_LOCATION('123','owner'))['plan_type']=='free'
+
+
+def test_topup_and_balance_do_not_require_a_business_profile():
+    assert main.TopUpRequest(user_id='owner').location_id is None
+    assert main.TokenBalanceRequest(user_id='owner').location_id is None
+
+
+def test_all_private_routes_reject_anonymous_requests(monkeypatch):
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(main.app.state,'db',main.supabase)
+    client=TestClient(main.app)
+    for route in main.app.routes:
+        path=route.path
+        if not path.startswith('/api/') or path in ('/api/health','/api/payment/key') or path.startswith(('/api/cron/','/api/webhooks/')):
+            continue
+        method='POST' if 'POST' in route.methods else 'GET'
+        response=client.request(method,path,json={})
+        assert response.status_code==401,(path,response.status_code)
+
+
+def test_authenticated_profile_route_reads_account(monkeypatch):
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(main.app.state,'db',main.supabase)
+    main.supabase.auth.get_user.return_value=SimpleNamespace(user=SimpleNamespace(id='owner',app_metadata={}))
+    main.supabase.rpc.return_value.execute.return_value.data={'id':'owner','tokens_balance':200}
+    response=TestClient(main.app).post('/api/user/profile',headers={'Authorization':'Bearer test-session'},json={'user_id':'owner'})
+    assert response.status_code==200
+    assert response.json()['tokens_balance']==200
