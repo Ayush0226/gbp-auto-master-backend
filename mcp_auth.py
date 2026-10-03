@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 
 
 OAUTH_SCOPES = ("openid", "email", "profile")
+DEFAULT_MCP_RESOURCE_URL = "https://gbp-auto-master-backend-us.onrender.com/mcp"
 
 
 def _https_url(value: str, setting: str) -> str:
@@ -16,7 +17,10 @@ def _https_url(value: str, setting: str) -> str:
 def protected_resource_metadata() -> dict:
     """Return RFC 9728 metadata used by MCP clients to start account linking."""
     supabase_url = _https_url(os.getenv("SUPABASE_URL", ""), "SUPABASE_URL")
-    resource = _https_url(os.getenv("MCP_RESOURCE_URL", ""), "MCP_RESOURCE_URL")
+    resource = _https_url(
+        os.getenv("MCP_RESOURCE_URL", DEFAULT_MCP_RESOURCE_URL),
+        "MCP_RESOURCE_URL",
+    )
     documentation = _https_url(
         os.getenv("MCP_DOCUMENTATION_URL", "https://gbpautomaster.in/privacy"),
         "MCP_DOCUMENTATION_URL",
@@ -29,4 +33,3 @@ def protected_resource_metadata() -> dict:
         "resource_name": "GBP Master",
         "resource_documentation": documentation,
     }
-

@@ -15,6 +15,7 @@ from mcp_auth import protected_resource_metadata
 from uuid import uuid4
 from contextlib import asynccontextmanager
 from starlette.concurrency import run_in_threadpool
+from mcp_server import create_gbp_mcp_server, mcp_transport_security
 
 
 @asynccontextmanager
@@ -28,7 +29,8 @@ async def lifespan(application):
         (await run_in_threadpool(lambda: application.state.db.table('account_token_ledger').select('id').limit(0).execute()))
     except Exception:
         raise RuntimeError('Database migration 001 must be applied before starting this backend') from None
-    yield
+    async with gbp_mcp.session_manager.run():
+        yield
 
 app = FastAPI(title="GBP Auto Master Backend", lifespan=lifespan, dependencies=[Depends(authorize), Depends(track_job)])
 
@@ -39,6 +41,7 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Mcp-Session-Id"],
 )
 
 # Initialize Razorpay Client
@@ -55,6 +58,11 @@ else:
     supabase = None
 
 app.state.db = supabase
+
+gbp_mcp = create_gbp_mcp_server(supabase)
+gbp_mcp_http = gbp_mcp.streamable_http_app(
+    transport_security=mcp_transport_security(),
+)
 
 
 @app.get("/.well-known/oauth-protected-resource")
@@ -1562,3 +1570,9 @@ async def run_review_job():
     if failed:
         raise HTTPException(502, f'{sent} replies sent; {failed} operations need attention. Inspect token_operations and Google connections.')
     return {'status':'success','message':f'AI sent {sent} replies'}
+
+
+# Keep this catch-all mount last. Starlette evaluates routes in declaration order,
+# so every existing HTTP API route above remains reachable and /mcp is handled by
+# the official MCP Streamable HTTP application.
+app.mount("/", gbp_mcp_http)

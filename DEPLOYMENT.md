@@ -134,9 +134,15 @@ must enforce location ownership and each tool's read/write rules. OAuth access t
 include a `client_id` claim, which must be required on MCP requests so ordinary browser
 sessions cannot be used as MCP credentials.
 
-The streamable HTTP `/mcp` endpoint is added in the next implementation stage. Until
-that endpoint exists, OAuth discovery and consent can be tested, but an AI client cannot
-complete a GBP tool call.
+The Streamable HTTP `/mcp` endpoint uses the official MCP Python SDK. It validates each
+bearer token with Supabase, requires the OAuth `client_id` claim, and derives the GBP
+Master account from the validated token rather than accepting a model-supplied user ID.
+The first production tools are `list_locations` and `get_credit_balance`; both are
+read-only and return structured output.
+
+After deployment, an unauthenticated MCP request should return HTTP 401 and a
+`WWW-Authenticate` header pointing to the protected-resource metadata. Complete an
+OAuth connection through an MCP client before testing `tools/list` and tool calls.
 
 ## Verification
 
