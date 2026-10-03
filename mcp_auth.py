@@ -3,7 +3,7 @@ import os
 from urllib.parse import urlparse
 
 
-OAUTH_SCOPES = ("openid", "email", "profile")
+OAUTH_SCOPES = ("openid", "email", "profile", "offline_access")
 DEFAULT_MCP_RESOURCE_URL = "https://gbp-auto-master-backend-us.onrender.com/mcp"
 
 

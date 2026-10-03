@@ -130,8 +130,8 @@ Before testing an AI-client connection:
    - `MCP_RESOURCE_URL=https://gbp-auto-master-backend-us.onrender.com/mcp`
    - `MCP_DOCUMENTATION_URL=https://gbpautomaster.in/privacy`
 
-Supabase currently supports the standard OAuth identity scopes `openid`, `email`,
-`profile`, and `phone`; it does not support custom GBP permission scopes. The MCP server
+Supabase currently supports the standard OAuth scopes `openid`, `email`, `profile`,
+`phone`, and `offline_access`; it does not support custom GBP permission scopes. The MCP server
 must enforce location ownership and each tool's read/write rules. OAuth access tokens
 include a `client_id` claim, which must be required on MCP requests so ordinary browser
 sessions cannot be used as MCP credentials.

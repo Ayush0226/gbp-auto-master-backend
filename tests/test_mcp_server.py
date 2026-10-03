@@ -38,7 +38,7 @@ def test_supabase_token_verifier_uses_validated_user_as_subject():
     assert verified is not None
     assert verified.subject == "account-123"
     assert verified.client_id == "client-1"
-    assert verified.scopes == ["openid", "email", "profile"]
+    assert verified.scopes == ["openid", "email", "profile", "offline_access"]
     db.auth.get_user.assert_called_once_with(token)
 
 

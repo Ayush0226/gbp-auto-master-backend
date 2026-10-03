@@ -13,7 +13,7 @@ def test_protected_resource_metadata_points_to_supabase_oauth(monkeypatch):
     assert metadata == {
         "resource": "https://api.example.com/mcp",
         "authorization_servers": ["https://project.supabase.co/auth/v1"],
-        "scopes_supported": ["openid", "email", "profile"],
+        "scopes_supported": ["openid", "email", "profile", "offline_access"],
         "bearer_methods_supported": ["header"],
         "resource_name": "GBP Master",
         "resource_documentation": "https://example.com/privacy",
@@ -36,4 +36,3 @@ def test_oauth_metadata_rejects_non_https_urls(monkeypatch, setting, value):
 
     with pytest.raises(RuntimeError, match="absolute HTTPS URL"):
         protected_resource_metadata()
-

@@ -38,8 +38,8 @@ def test_model_inputs_never_accept_identity_or_provider_secrets():
 def test_oauth_uses_only_supabase_supported_identity_scopes():
     contract = load_contract()
 
-    assert contract["authentication"]["oauthScopes"] == ["openid", "email", "profile"]
-    assert set(contract["scopes"]) == {"openid", "email", "profile"}
+    assert contract["authentication"]["oauthScopes"] == ["openid", "email", "profile", "offline_access"]
+    assert set(contract["scopes"]) == {"openid", "email", "profile", "offline_access"}
 
 
 def test_annotations_and_confirmation_match_side_effects():
