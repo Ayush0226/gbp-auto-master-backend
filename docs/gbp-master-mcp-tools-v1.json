@@ -1,0 +1,330 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "contractVersion": "1.0.0",
+  "serverName": "GBP Master",
+  "serverInstructions": "Use GBP Master to inspect and manage the authenticated user's Google Business Profile locations. Resolve a location with list_locations before using a location-scoped tool. Never ask for or return Google access tokens, refresh tokens, Supabase user IDs, or Google account IDs. Read operations do not spend credits. Before a public reply, scheduled post, or cancellation, show the exact proposed action and obtain confirmation. Report the credit charge and remaining balance returned by the server.",
+  "authentication": {
+    "required": true,
+    "identitySource": "OAuth access token request context",
+    "oauthScopes": ["openid", "email", "profile"],
+    "permissionEnforcement": "GBP tool permissions are enforced by the MCP server. Supabase OAuth currently supports standard identity scopes rather than custom application scopes.",
+    "forbiddenModelInputs": [
+      "user_id",
+      "google_access_token",
+      "google_refresh_token",
+      "google_account_id"
+    ]
+  },
+  "scopes": {
+    "openid": "Confirm the user's GBP Master identity.",
+    "email": "Read the email address attached to the GBP Master account.",
+    "profile": "Read basic GBP Master account profile information."
+  },
+  "errors": {
+    "authentication_required": "The GBP Master connection is missing or expired.",
+    "permission_denied": "The signed-in user does not own the requested location or resource.",
+    "google_reconnect_required": "The saved Google authorization is missing, expired, or revoked.",
+    "insufficient_credits": "The account does not have enough credits for this action.",
+    "resource_not_found": "The requested location, review, or scheduled post was not found.",
+    "conflict": "The action was already completed or the resource changed since it was read.",
+    "upstream_unavailable": "Google or another required service could not complete the request.",
+    "delivery_uncertain": "The request may have reached Google; reconcile its status before retrying."
+  },
+  "tools": [
+    {
+      "name": "list_locations",
+      "title": "List business locations",
+      "description": "Use when the user wants to see or choose a connected Google Business Profile location. Returns only locations owned by the authenticated GBP Master account.",
+      "authorization": ["gbp.locations.read"],
+      "creditCost": 0,
+      "confirmation": "never",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "locations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "location_id": {"type": "string", "pattern": "^locations/[A-Za-z0-9_-]+$"},
+                "name": {"type": "string"},
+                "plan": {"type": "string", "enum": ["free", "monthly", "half_yearly", "yearly"]},
+                "subscription_expires_at": {"type": ["string", "null"], "format": "date-time"}
+              },
+              "required": ["location_id", "name", "plan", "subscription_expires_at"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["locations"],
+        "additionalProperties": false
+      },
+      "annotations": {"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "get_credit_balance",
+      "title": "Get credit balance",
+      "description": "Use when the user asks about available GBP Master credits or the cost of supported actions. The balance is shared across the authenticated account's locations.",
+      "authorization": ["gbp.credits.read"],
+      "creditCost": 0,
+      "confirmation": "never",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "balance": {"type": "number", "minimum": 0},
+          "action_costs": {
+            "type": "object",
+            "properties": {
+              "publish_review_reply": {"type": "number", "const": 2.5},
+              "schedule_post": {"type": "number", "const": 5}
+            },
+            "required": ["publish_review_reply", "schedule_post"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["balance", "action_costs"],
+        "additionalProperties": false
+      },
+      "annotations": {"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "list_reviews",
+      "title": "List customer reviews",
+      "description": "Use when the user wants to inspect Google reviews for one connected business location. It can return all reviews, only unanswered reviews, or only answered reviews.",
+      "authorization": ["gbp.reviews.read"],
+      "creditCost": 0,
+      "confirmation": "never",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "location_id": {"type": "string", "pattern": "^locations/[A-Za-z0-9_-]+$"},
+          "reply_status": {"type": "string", "enum": ["all", "unanswered", "answered"], "default": "all"},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
+          "page_token": {"type": ["string", "null"], "maxLength": 500}
+        },
+        "required": ["location_id"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "location_id": {"type": "string"},
+          "reviews": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "review_id": {"type": "string"},
+                "reviewer_name": {"type": "string"},
+                "rating": {"type": "integer", "minimum": 1, "maximum": 5},
+                "comment": {"type": "string"},
+                "created_at": {"type": "string", "format": "date-time"},
+                "has_reply": {"type": "boolean"},
+                "reply_text": {"type": ["string", "null"]}
+              },
+              "required": ["review_id", "reviewer_name", "rating", "comment", "created_at", "has_reply", "reply_text"],
+              "additionalProperties": false
+            }
+          },
+          "next_page_token": {"type": ["string", "null"]},
+          "total_review_count": {"type": "integer", "minimum": 0},
+          "average_rating": {"type": "number", "minimum": 0, "maximum": 5}
+        },
+        "required": ["location_id", "reviews", "next_page_token", "total_review_count", "average_rating"],
+        "additionalProperties": false
+      },
+      "annotations": {"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "draft_review_reply",
+      "title": "Draft a review reply",
+      "description": "Use when the user wants a proposed reply for one unanswered review without publishing it. Uses the saved tone, keywords, and business instructions for the selected location.",
+      "authorization": ["gbp.reviews.read"],
+      "creditCost": 0,
+      "confirmation": "never",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "location_id": {"type": "string", "pattern": "^locations/[A-Za-z0-9_-]+$"},
+          "review_id": {"type": "string", "maxLength": 500}
+        },
+        "required": ["location_id", "review_id"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "location_id": {"type": "string"},
+          "review_id": {"type": "string"},
+          "reviewer_name": {"type": "string"},
+          "rating": {"type": "integer", "minimum": 1, "maximum": 5},
+          "review_comment": {"type": "string"},
+          "draft_text": {"type": "string", "minLength": 1, "maxLength": 4096},
+          "publish_cost": {"type": "number", "const": 2.5}
+        },
+        "required": ["location_id", "review_id", "reviewer_name", "rating", "review_comment", "draft_text", "publish_cost"],
+        "additionalProperties": false
+      },
+      "annotations": {"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "publish_review_reply",
+      "title": "Publish a review reply",
+      "description": "Publishes the exact supplied reply to one unanswered Google review after the user approves it. This creates a public response and charges 2.5 GBP Master credits only when Google accepts the reply.",
+      "authorization": ["gbp.reviews.write"],
+      "creditCost": 2.5,
+      "confirmation": "always",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "location_id": {"type": "string", "pattern": "^locations/[A-Za-z0-9_-]+$"},
+          "review_id": {"type": "string", "maxLength": 500},
+          "reply_text": {"type": "string", "minLength": 1, "maxLength": 4096}
+        },
+        "required": ["location_id", "review_id", "reply_text"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {"type": "string", "enum": ["published"]},
+          "location_id": {"type": "string"},
+          "review_id": {"type": "string"},
+          "published_reply": {"type": "string"},
+          "credits_charged": {"type": "number", "const": 2.5},
+          "remaining_balance": {"type": "number", "minimum": 0}
+        },
+        "required": ["status", "location_id", "review_id", "published_reply", "credits_charged", "remaining_balance"],
+        "additionalProperties": false
+      },
+      "annotations": {"readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "list_scheduled_posts",
+      "title": "List scheduled posts",
+      "description": "Use when the user wants to inspect upcoming or previous GBP Master calendar items for one connected business location.",
+      "authorization": ["gbp.posts.read"],
+      "creditCost": 0,
+      "confirmation": "never",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "location_id": {"type": "string", "pattern": "^locations/[A-Za-z0-9_-]+$"},
+          "status": {"type": "string", "enum": ["all", "scheduled", "publishing", "published", "failed"], "default": "scheduled"},
+          "from": {"type": ["string", "null"], "format": "date-time"},
+          "to": {"type": ["string", "null"], "format": "date-time"},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}
+        },
+        "required": ["location_id"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "posts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "post_id": {"type": "string"},
+                "location_id": {"type": "string"},
+                "scheduled_for": {"type": "string", "format": "date-time"},
+                "caption": {"type": "string"},
+                "media_url": {"type": ["string", "null"], "format": "uri"},
+                "post_type": {"type": "string", "enum": ["LOCAL_POST", "PHOTO", "VIDEO"]},
+                "status": {"type": "string", "enum": ["scheduled", "publishing", "published", "failed"]}
+              },
+              "required": ["post_id", "location_id", "scheduled_for", "caption", "media_url", "post_type", "status"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["posts"],
+        "additionalProperties": false
+      },
+      "annotations": {"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "schedule_post",
+      "title": "Schedule a business post",
+      "description": "Schedules one text, photo, or video item for a connected Google Business Profile after the user approves the content, location, and time. Charges 5 GBP Master credits when the schedule is created.",
+      "authorization": ["gbp.posts.write"],
+      "creditCost": 5,
+      "confirmation": "always",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "location_id": {"type": "string", "pattern": "^locations/[A-Za-z0-9_-]+$"},
+          "publish_at": {"type": "string", "format": "date-time"},
+          "caption": {"type": "string", "maxLength": 1500},
+          "post_type": {"type": "string", "enum": ["LOCAL_POST", "PHOTO", "VIDEO"]},
+          "media_url": {"type": ["string", "null"], "format": "uri"}
+        },
+        "required": ["location_id", "publish_at", "caption", "post_type", "media_url"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {"type": "string", "enum": ["scheduled"]},
+          "post_id": {"type": "string"},
+          "location_id": {"type": "string"},
+          "scheduled_for": {"type": "string", "format": "date-time"},
+          "credits_charged": {"type": "number", "const": 5},
+          "remaining_balance": {"type": "number", "minimum": 0}
+        },
+        "required": ["status", "post_id", "location_id", "scheduled_for", "credits_charged", "remaining_balance"],
+        "additionalProperties": false
+      },
+      "annotations": {"readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "cancel_scheduled_post",
+      "title": "Cancel a scheduled post",
+      "description": "Cancels and removes one pending scheduled post after the user approves the cancellation. It cannot cancel a post that is publishing or already published, and the original scheduling charge is not refunded.",
+      "authorization": ["gbp.posts.write"],
+      "creditCost": 0,
+      "confirmation": "always",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "location_id": {"type": "string", "pattern": "^locations/[A-Za-z0-9_-]+$"},
+          "post_id": {"type": "string", "maxLength": 100}
+        },
+        "required": ["location_id", "post_id"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {"type": "string", "enum": ["cancelled"]},
+          "post_id": {"type": "string"},
+          "credits_refunded": {"type": "number", "const": 0}
+        },
+        "required": ["status", "post_id", "credits_refunded"],
+        "additionalProperties": false
+      },
+      "annotations": {"readOnlyHint": false, "destructiveHint": true, "openWorldHint": false}
+    }
+  ],
+  "implementationGaps": [
+    "MCP/OAuth request context must derive the user identity; current HTTP endpoints accept user_id and Google tokens in request bodies.",
+    "Google refresh tokens must move to server-managed credential storage that MCP handlers can use.",
+    "Review listing needs server-side reply filtering and Google page-token support.",
+    "A single-review draft handler is needed; the current draft endpoint is an administrator batch operation.",
+    "Manual reply publishing must enforce ownership, reserve 2.5 credits, and reconcile uncertain Google delivery.",
+    "A user-owned calendar list handler is needed for MCP.",
+    "Calendar storage currently records only a date; publish_at requires a timezone-aware timestamp migration and worker update.",
+    "MCP media input needs a secure upload or durable HTTPS URL workflow before photo and video scheduling can be reliable."
+  ]
+}

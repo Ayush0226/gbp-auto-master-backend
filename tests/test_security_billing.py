@@ -22,6 +22,7 @@ def secured():
     @app.post('/api/google/post-reply')
     @app.get('/api/cron/publish-scheduled')
     @app.post('/api/webhooks/google-reviews')
+    @app.get('/.well-known/oauth-protected-resource')
     async def endpoint():
         return {'status':'success'}
     return TestClient(app), db, user
@@ -30,6 +31,12 @@ def secured():
 def test_anonymous_request_rejected(secured):
     client, db, _ = secured
     assert client.post('/api/user/profile', json={'user_id':'owner'}).status_code == 401
+    db.auth.get_user.assert_not_called()
+
+
+def test_oauth_resource_metadata_is_public(secured):
+    client, db, _ = secured
+    assert client.get('/.well-known/oauth-protected-resource').status_code == 200
     db.auth.get_user.assert_not_called()
 
 

@@ -105,6 +105,39 @@ Vite plugin, screens load separately, and jsPDF was updated to clear npm advisor
 The old `Dashboard.tsx` and `Dashboard.legacy.tsx` are retained as inactive reference
 implementations and excluded from the active TypeScript build. `App.tsx` uses V2.
 
+## OAuth account linking for GBP Master
+
+The UI includes an OAuth consent screen at `/oauth/consent`, and the backend exposes
+RFC 9728 discovery metadata at `/.well-known/oauth-protected-resource` and
+`/.well-known/oauth-protected-resource/mcp`. The actual OAuth authorization and token
+endpoints are provided by the existing Supabase Auth project.
+
+Before testing an AI-client connection:
+
+1. Deploy the frontend containing `/oauth/consent` and the backend discovery route.
+2. In Supabase, open **Authentication > URL Configuration** and set the canonical
+   production Site URL. Add the production `/oauth/consent` URL to allowed redirects.
+3. Open **Authentication > OAuth Server**, enable OAuth 2.1, and set Authorization Path
+   to `/oauth/consent`.
+4. Use an asymmetric Supabase JWT signing key (RS256 or ES256) so clients can validate
+   access tokens using the project's public JWKS endpoint.
+5. Enable Dynamic Client Registration for MCP client testing. Every client still goes
+   through the GBP Master consent screen. Review registered clients regularly.
+6. Configure the backend with:
+
+   - `MCP_RESOURCE_URL=https://gbp-auto-master-backend-us.onrender.com/mcp`
+   - `MCP_DOCUMENTATION_URL=https://gbpautomaster.in/privacy`
+
+Supabase currently supports the standard OAuth identity scopes `openid`, `email`,
+`profile`, and `phone`; it does not support custom GBP permission scopes. The MCP server
+must enforce location ownership and each tool's read/write rules. OAuth access tokens
+include a `client_id` claim, which must be required on MCP requests so ordinary browser
+sessions cannot be used as MCP credentials.
+
+The streamable HTTP `/mcp` endpoint is added in the next implementation stage. Until
+that endpoint exists, OAuth discovery and consent can be tested, but an AI client cannot
+complete a GBP tool call.
+
 ## Verification
 
 ```text

@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: gbp-auto-master-backend
+    name: gbp-auto-master-backend-us
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
@@ -28,3 +28,7 @@ services:
         value: https://www.gbpautomaster.in,https://gbpautomaster.in
       - key: BUSINESS_TIMEZONE
         value: Asia/Kolkata
+      - key: MCP_RESOURCE_URL
+        value: https://gbp-auto-master-backend-us.onrender.com/mcp
+      - key: MCP_DOCUMENTATION_URL
+        value: https://gbpautomaster.in/privacy

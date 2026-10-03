@@ -11,6 +11,7 @@ load_dotenv(".env.local", override=False)
 
 from security import authorize, normalize_location, track_job
 import billing
+from mcp_auth import protected_resource_metadata
 from uuid import uuid4
 from contextlib import asynccontextmanager
 from starlette.concurrency import run_in_threadpool
@@ -54,6 +55,13 @@ else:
     supabase = None
 
 app.state.db = supabase
+
+
+@app.get("/.well-known/oauth-protected-resource")
+@app.get("/.well-known/oauth-protected-resource/mcp")
+async def oauth_protected_resource_metadata():
+    """Advertise the Supabase authorization server to MCP clients."""
+    return protected_resource_metadata()
 
 class RequestModel(BaseModel):
     @field_validator('location_id', check_fields=False)

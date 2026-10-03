@@ -18,7 +18,12 @@ def normalize_location(value: str) -> str:
 
 async def authorize(request: Request):
     path = request.url.path
-    if path in {"/api/health", "/api/payment/key"}:
+    if path in {
+        "/api/health",
+        "/api/payment/key",
+        "/.well-known/oauth-protected-resource",
+        "/.well-known/oauth-protected-resource/mcp",
+    }:
         return
     authorization = request.headers.get("authorization", "")
     token = authorization[7:] if authorization.lower().startswith('bearer ') else ''
