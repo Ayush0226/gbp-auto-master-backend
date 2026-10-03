@@ -25,8 +25,10 @@ the backend: the new API requires a Supabase session on every private request.
    Supabase auth metadata. Pause external cron jobs and briefly stop checkout/new
    writes during the cutover. The SQL migration is additive, but it deliberately
    revokes old browser write permissions.
-2. Run **`migrations/001_secure_billing.sql`** in the Supabase SQL editor, once, as
-   the project database administrator. The entire migration is a transaction.
+2. Run **`migrations/001_secure_billing.sql`**, followed by
+   **`migrations/002_mcp_scheduling.sql`**, in the Supabase SQL editor as the project
+   database administrator. Each migration is a transaction. Migration 002 adds exact
+   publication timestamps while keeping the website's date-based scheduler compatible.
    It creates server-only payment/token functions and enforces owner-scoped reads.
 3. Existing legacy subscription metadata is copied into a protected snapshot.
    Once Google verifies a profile, a valid, unexpired matching plan is carried over.
@@ -137,8 +139,10 @@ sessions cannot be used as MCP credentials.
 The Streamable HTTP `/mcp` endpoint uses the official MCP Python SDK. It validates each
 bearer token with Supabase, requires the OAuth `client_id` claim, and derives the GBP
 Master account from the validated token rather than accepting a model-supplied user ID.
-The first production tools are `list_locations` and `get_credit_balance`; both are
-read-only and return structured output.
+The production tool set includes location and credit lookup, review listing and drafting,
+confirmed review publication, calendar listing, exact-time post scheduling, and confirmed
+scheduled-post cancellation. Read tools cost no credits. Reply publication costs 2.5
+credits and scheduling costs 5 credits through the existing transactional ledger.
 
 After deployment, an unauthenticated MCP request should return HTTP 401 and a
 `WWW-Authenticate` header pointing to the protected-resource metadata. Complete an

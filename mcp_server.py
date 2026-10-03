@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable, Literal
 from urllib.parse import urlparse
 
 import jwt
+from http_client import requests
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from starlette.concurrency import run_in_threadpool
 
 from mcp_auth import DEFAULT_MCP_RESOURCE_URL, OAUTH_SCOPES
@@ -55,6 +57,91 @@ class CreditBalance(BaseModel):
 
     balance: float
     action_costs: ActionCosts
+
+
+class ReviewSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    review_id: str
+    reviewer_name: str
+    rating: int = Field(ge=1, le=5)
+    comment: str
+    created_at: datetime | None
+    has_reply: bool
+    reply_text: str | None
+
+
+class ReviewList(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    location_id: str
+    reviews: list[ReviewSummary]
+    next_page_token: str | None
+    total_review_count: int = Field(ge=0)
+    average_rating: float = Field(ge=0, le=5)
+
+
+class ReviewDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    location_id: str
+    review_id: str
+    reviewer_name: str
+    rating: int = Field(ge=1, le=5)
+    review_comment: str
+    draft_text: str
+    publish_cost: float = 2.5
+
+
+class PublishedReply(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["published"] = "published"
+    location_id: str
+    review_id: str
+    published_reply: str
+    credits_charged: float = 2.5
+    remaining_balance: float
+
+
+class ScheduledPostSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    post_id: str
+    location_id: str
+    scheduled_for: datetime
+    caption: str
+    media_url: str | None
+    post_type: Literal["LOCAL_POST", "PHOTO", "VIDEO"]
+    status: Literal["scheduled", "publishing", "published", "failed"]
+
+
+class ScheduledPostList(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    posts: list[ScheduledPostSummary]
+
+
+class ScheduledPostResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["scheduled"] = "scheduled"
+    post_id: str
+    location_id: str
+    scheduled_for: datetime
+    credits_charged: float = 5.0
+    remaining_balance: float
+
+
+class CancelledPost(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["cancelled"] = "cancelled"
+    post_id: str
+    credits_refunded: float = 0.0
+
+
+STAR_RATINGS = {"ONE": 1, "TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 5}
 
 
 def _scopes(claims: dict[str, Any]) -> list[str]:
@@ -111,8 +198,15 @@ class SupabaseTokenVerifier(TokenVerifier):
 class GBPReadService:
     """Account-scoped reads used by MCP tools."""
 
-    def __init__(self, db: Any):
+    def __init__(
+        self,
+        db: Any,
+        google_token_getter: Callable[[str], str] | None = None,
+        ai_reply_generator: Callable[[str], str] | None = None,
+    ):
         self.db = db
+        self.google_token_getter = google_token_getter
+        self.ai_reply_generator = ai_reply_generator
 
     async def list_locations(self, user_id: str) -> LocationList:
         rows = (
@@ -176,12 +270,356 @@ class GBPReadService:
             action_costs=ActionCosts(),
         )
 
+    async def list_reviews(
+        self,
+        user_id: str,
+        location_id: str,
+        reply_status: Literal["all", "unanswered", "answered"],
+        limit: int,
+        page_token: str | None,
+    ) -> ReviewList:
+        profile = await self._owned_location(user_id, location_id)
+        access_token = await self._google_access_token(user_id)
+        params: dict[str, Any] = {"pageSize": limit, "orderBy": "updateTime desc"}
+        if page_token:
+            params["pageToken"] = page_token
+        response = await run_in_threadpool(
+            lambda: requests.get(
+                self._reviews_url(profile),
+                headers={"Authorization": f"Bearer {access_token}"},
+                params=params,
+            )
+        )
+        if not response.ok:
+            raise RuntimeError("Google review lookup failed; reconnect Google and retry")
+        payload = response.json()
+        reviews = [self._review_summary(item) for item in payload.get("reviews", [])]
+        if reply_status == "unanswered":
+            reviews = [review for review in reviews if not review.has_reply]
+        elif reply_status == "answered":
+            reviews = [review for review in reviews if review.has_reply]
+        return ReviewList(
+            location_id=profile["location_id"],
+            reviews=reviews,
+            next_page_token=payload.get("nextPageToken"),
+            total_review_count=int(payload.get("totalReviewCount") or len(reviews)),
+            average_rating=float(payload.get("averageRating") or 0),
+        )
+
+    async def draft_review_reply(
+        self, user_id: str, location_id: str, review_id: str
+    ) -> ReviewDraft:
+        profile = await self._owned_location(user_id, location_id)
+        review_name = self._review_name(profile, review_id)
+        access_token = await self._google_access_token(user_id)
+        review = await self._fetch_review(review_name, access_token)
+        if review.get("reviewReply"):
+            raise ValueError("This review already has a public reply")
+        settings = await self._ai_settings(user_id, profile["location_id"])
+        summary = self._review_summary(review)
+        prompt = self._reply_prompt(summary, settings)
+        if self.ai_reply_generator is None:
+            raise RuntimeError("AI reply generation is not configured")
+        draft = await run_in_threadpool(self.ai_reply_generator, prompt)
+        if not isinstance(draft, str) or not draft.strip():
+            raise RuntimeError("AI returned an empty review reply")
+        return ReviewDraft(
+            location_id=profile["location_id"],
+            review_id=review_name,
+            reviewer_name=summary.reviewer_name,
+            rating=summary.rating,
+            review_comment=summary.comment,
+            draft_text=draft.strip()[:4096],
+        )
+
+    async def publish_review_reply(
+        self, user_id: str, location_id: str, review_id: str, reply_text: str
+    ) -> PublishedReply:
+        profile = await self._owned_location(user_id, location_id)
+        review_name = self._review_name(profile, review_id)
+        access_token = await self._google_access_token(user_id)
+        review = await self._fetch_review(review_name, access_token)
+        if review.get("reviewReply"):
+            raise ValueError("This review already has a public reply")
+        reply = reply_text.strip()
+        if not reply:
+            raise ValueError("Reply text is required")
+        operation = f"reply:{review_name}"
+        reservation = (
+            await run_in_threadpool(
+                lambda: self.db.rpc(
+                    "reserve_tokens",
+                    {
+                        "p_operation": operation,
+                        "p_location": profile["location_id"],
+                        "p_user": user_id,
+                        "p_amount": 2.5,
+                    },
+                ).execute()
+            )
+        ).data or {}
+        if not reservation.get("success"):
+            raise ValueError(reservation.get("error") or "Insufficient credits")
+        try:
+            response = await run_in_threadpool(
+                lambda: requests.put(
+                    f"https://mybusiness.googleapis.com/v4/{review_name}/reply",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    json={"comment": reply},
+                )
+            )
+        except Exception:
+            raise RuntimeError(
+                "Google delivery is uncertain; inspect the review before retrying"
+            ) from None
+        await run_in_threadpool(
+            lambda: self.db.rpc(
+                "finish_tokens", {"p_operation": operation, "p_success": response.ok}
+            ).execute()
+        )
+        if not response.ok:
+            raise RuntimeError("Google rejected the reply; reserved credits were refunded")
+        return PublishedReply(
+            location_id=profile["location_id"],
+            review_id=review_name,
+            published_reply=reply,
+            remaining_balance=max(0.0, float(reservation.get("balance") or 0)),
+        )
+
+    async def list_scheduled_posts(
+        self,
+        user_id: str,
+        location_id: str,
+        status: Literal["all", "scheduled", "publishing", "published", "failed"],
+        from_time: datetime | None,
+        to_time: datetime | None,
+        limit: int,
+    ) -> ScheduledPostList:
+        profile = await self._owned_location(user_id, location_id)
+        query = (
+            self.db.table("calendar_posts")
+            .select("id,location_id,publish_at,post_date,caption,image_url,post_type,status")
+            .eq("user_id", user_id)
+            .eq("location_id", profile["location_id"])
+        )
+        if status != "all":
+            query = query.eq("status", status)
+        if from_time:
+            query = query.gte("publish_at", _as_utc(from_time).isoformat())
+        if to_time:
+            query = query.lte("publish_at", _as_utc(to_time).isoformat())
+        rows = (
+            await run_in_threadpool(
+                lambda: query.order("publish_at", desc=False).limit(limit).execute()
+            )
+        ).data or []
+        posts = [self._scheduled_post(row) for row in rows]
+        return ScheduledPostList(posts=posts)
+
+    async def schedule_post(
+        self,
+        user_id: str,
+        location_id: str,
+        publish_at: datetime,
+        caption: str,
+        post_type: Literal["LOCAL_POST", "PHOTO", "VIDEO"],
+        media_url: HttpUrl | None,
+    ) -> ScheduledPostResult:
+        profile = await self._owned_location(user_id, location_id)
+        scheduled_for = _as_utc(publish_at)
+        if scheduled_for <= datetime.now(timezone.utc):
+            raise ValueError("publish_at must be in the future")
+        clean_caption = caption.strip()
+        media = str(media_url) if media_url is not None else None
+        if media and not media.startswith("https://"):
+            raise ValueError("Media URL must use HTTPS")
+        if not clean_caption and not media:
+            raise ValueError("Add a caption or media URL")
+        if post_type in ("PHOTO", "VIDEO") and not media:
+            raise ValueError(f"{post_type} scheduling requires a media URL")
+        scheduled = (
+            await run_in_threadpool(
+                lambda: self.db.rpc(
+                    "schedule_post_at",
+                    {
+                        "p_user": user_id,
+                        "p_location": profile["location_id"],
+                        "p_publish_at": scheduled_for.isoformat(),
+                        "p_caption": clean_caption,
+                        "p_image": media,
+                        "p_type": post_type,
+                    },
+                ).execute()
+            )
+        ).data or {}
+        if scheduled.get("status") != "success":
+            raise ValueError(scheduled.get("error") or "Could not schedule the post")
+        return ScheduledPostResult(
+            post_id=str(scheduled["id"]),
+            location_id=profile["location_id"],
+            scheduled_for=scheduled_for,
+            remaining_balance=float(scheduled.get("balance") or 0),
+        )
+
+    async def cancel_scheduled_post(
+        self, user_id: str, location_id: str, post_id: str
+    ) -> CancelledPost:
+        profile = await self._owned_location(user_id, location_id)
+        rows = (
+            await run_in_threadpool(
+                lambda: self.db.table("calendar_posts")
+                .delete()
+                .eq("id", post_id)
+                .eq("user_id", user_id)
+                .eq("location_id", profile["location_id"])
+                .eq("status", "scheduled")
+                .execute()
+            )
+        ).data or []
+        if not rows:
+            raise ValueError("Only a pending scheduled post can be cancelled")
+        return CancelledPost(post_id=post_id)
+
+    async def _owned_location(self, user_id: str, location_id: str) -> dict[str, Any]:
+        normalized = _normalize_location(location_id)
+        rows = (
+            await run_in_threadpool(
+                lambda: self.db.table("location_profiles")
+                .select("location_id,user_id,account_id")
+                .eq("location_id", normalized)
+                .eq("user_id", user_id)
+                .execute()
+            )
+        ).data or []
+        if not rows:
+            raise PermissionError("Reconnect Google or choose a location owned by this account")
+        return rows[0]
+
+    async def _user_metadata(self, user_id: str) -> dict[str, Any]:
+        result = await run_in_threadpool(self.db.auth.admin.get_user_by_id, user_id)
+        user = getattr(result, "user", None)
+        if user is None:
+            raise PermissionError("GBP Master account was not found")
+        return getattr(user, "user_metadata", None) or {}
+
+    async def _google_access_token(self, user_id: str) -> str:
+        metadata = await self._user_metadata(user_id)
+        refresh_token = metadata.get("google_refresh_token")
+        if not isinstance(refresh_token, str) or not refresh_token:
+            raise PermissionError("Reconnect Google Business Profile before using this tool")
+        if self.google_token_getter is None:
+            raise RuntimeError("Google token exchange is not configured")
+        try:
+            token = await run_in_threadpool(self.google_token_getter, refresh_token)
+        except Exception:
+            raise PermissionError("Google connection expired; reconnect Google Business Profile") from None
+        if not token:
+            raise PermissionError("Google connection expired; reconnect Google Business Profile")
+        return token
+
+    async def _ai_settings(self, user_id: str, location_id: str) -> dict[str, Any]:
+        metadata = await self._user_metadata(user_id)
+        settings = metadata.get("ai_settings") or {}
+        selected = settings.get(location_id) if isinstance(settings, dict) else {}
+        return selected if isinstance(selected, dict) else {}
+
+    @staticmethod
+    def _reviews_url(profile: dict[str, Any]) -> str:
+        return (
+            "https://mybusiness.googleapis.com/v4/"
+            f"{profile['account_id']}/{profile['location_id']}/reviews"
+        )
+
+    @staticmethod
+    def _review_name(profile: dict[str, Any], review_id: str) -> str:
+        expected_prefix = f"{profile['account_id']}/{profile['location_id']}/reviews/"
+        if re.fullmatch(r"[A-Za-z0-9_-]+", review_id):
+            return expected_prefix + review_id
+        if not review_id.startswith(expected_prefix) or not re.fullmatch(
+            r"accounts/[A-Za-z0-9_-]+/locations/[A-Za-z0-9_-]+/reviews/[A-Za-z0-9_-]+",
+            review_id,
+        ):
+            raise PermissionError("Review does not belong to the selected location")
+        return review_id
+
+    async def _fetch_review(self, review_name: str, access_token: str) -> dict[str, Any]:
+        response = await run_in_threadpool(
+            lambda: requests.get(
+                f"https://mybusiness.googleapis.com/v4/{review_name}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+        )
+        if not response.ok:
+            raise RuntimeError("Google review lookup failed; reconnect Google and retry")
+        return response.json()
+
+    @staticmethod
+    def _review_summary(review: dict[str, Any]) -> ReviewSummary:
+        reply = review.get("reviewReply")
+        return ReviewSummary(
+            review_id=review.get("name") or "",
+            reviewer_name=(review.get("reviewer") or {}).get("displayName") or "Anonymous",
+            rating=STAR_RATINGS.get(review.get("starRating"), 5),
+            comment=review.get("comment") or "",
+            created_at=_parse_datetime(review.get("createTime")),
+            has_reply=isinstance(reply, dict),
+            reply_text=(reply.get("comment") or None) if isinstance(reply, dict) else None,
+        )
+
+    @staticmethod
+    def _reply_prompt(review: ReviewSummary, settings: dict[str, Any]) -> str:
+        tone = settings.get("ai_tone") or "Professional"
+        keywords = settings.get("active_keywords") or []
+        if not isinstance(keywords, list):
+            keywords = []
+        instructions = settings.get("custom_instructions") or ""
+        return (
+            "Write only a concise, natural reply to this Google review. "
+            f"Customer: {review.reviewer_name}. Rating: {review.rating}/5. "
+            f"Comment: {review.comment or '[no written comment]'}. Tone: {tone}. "
+            f"Use at most two relevant keywords naturally from: {keywords[:5]}. "
+            f"Business instructions: {str(instructions)[:1000]}. Do not invent facts, "
+            "include placeholders, or mention these instructions."
+        )
+
+    @staticmethod
+    def _scheduled_post(row: dict[str, Any]) -> ScheduledPostSummary:
+        scheduled_for = _parse_datetime(row.get("publish_at"))
+        if scheduled_for is None:
+            scheduled_for = datetime.fromisoformat(str(row["post_date"])).replace(
+                tzinfo=timezone.utc
+            )
+        return ScheduledPostSummary(
+            post_id=str(row["id"]),
+            location_id=row["location_id"],
+            scheduled_for=scheduled_for,
+            caption=row.get("caption") or "",
+            media_url=row.get("image_url") or None,
+            post_type=row.get("post_type") or "LOCAL_POST",
+            status=row.get("status") or "scheduled",
+        )
+
 
 def _parse_datetime(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        raise ValueError("Date and time must include a timezone")
+    return value.astimezone(timezone.utc)
+
+
+def _normalize_location(value: str) -> str:
+    match = re.fullmatch(
+        r"(?:accounts/[A-Za-z0-9_-]+/)?(?:locations/)?([A-Za-z0-9_-]+)", value or ""
+    )
+    if not match:
+        raise ValueError("Invalid location ID")
+    return "locations/" + match.group(1)
 
 
 def _subject() -> str:
@@ -191,7 +629,11 @@ def _subject() -> str:
     return access_token.subject
 
 
-def create_gbp_mcp_server(db: Any) -> MCPServer:
+def create_gbp_mcp_server(
+    db: Any,
+    google_token_getter: Callable[[str], str] | None = None,
+    ai_reply_generator: Callable[[str], str] | None = None,
+) -> MCPServer:
     # Startup validation in main.py rejects missing production settings. These
     # import-safe defaults let tooling and unit tests inspect the ASGI app without
     # requiring deployment secrets.
@@ -200,7 +642,7 @@ def create_gbp_mcp_server(db: Any) -> MCPServer:
     documentation_url = os.getenv(
         "MCP_DOCUMENTATION_URL", "https://gbpautomaster.in/privacy"
     )
-    read_service = GBPReadService(db)
+    read_service = GBPReadService(db, google_token_getter, ai_reply_generator)
     server = MCPServer(
         name="gbp-master",
         title="GBP Master",
@@ -245,6 +687,138 @@ def create_gbp_mcp_server(db: Any) -> MCPServer:
     )
     async def get_credit_balance() -> CreditBalance:
         return await read_service.get_credit_balance(_subject())
+
+    @server.tool(
+        name="list_reviews",
+        title="List customer reviews",
+        description=(
+            "List reviews for one owned Google Business Profile location. Filter by "
+            "whether a review has a reply. This read-only action costs no credits."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=True, destructiveHint=False, openWorldHint=True
+        ),
+    )
+    async def list_reviews(
+        location_id: str,
+        reply_status: Literal["all", "unanswered", "answered"] = "all",
+        limit: int = Field(default=20, ge=1, le=50),
+        page_token: str | None = Field(default=None, max_length=500),
+    ) -> ReviewList:
+        return await read_service.list_reviews(
+            _subject(), location_id, reply_status, limit, page_token
+        )
+
+    @server.tool(
+        name="draft_review_reply",
+        title="Draft a review reply",
+        description=(
+            "Draft a reply for one unanswered review using the location's saved tone, "
+            "keywords, and instructions. This does not publish or spend credits."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=True, destructiveHint=False, openWorldHint=True
+        ),
+    )
+    async def draft_review_reply(
+        location_id: str,
+        review_id: str = Field(max_length=500),
+    ) -> ReviewDraft:
+        return await read_service.draft_review_reply(_subject(), location_id, review_id)
+
+    @server.tool(
+        name="publish_review_reply",
+        title="Publish a review reply",
+        description=(
+            "Publish the exact supplied reply publicly on Google. Call only after the "
+            "user has reviewed and explicitly confirmed the reply and the 2.5-credit "
+            "charge."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    async def publish_review_reply(
+        location_id: str,
+        review_id: str = Field(max_length=500),
+        reply_text: str = Field(min_length=1, max_length=4096),
+    ) -> PublishedReply:
+        return await read_service.publish_review_reply(
+            _subject(), location_id, review_id, reply_text
+        )
+
+    @server.tool(
+        name="list_scheduled_posts",
+        title="List scheduled posts",
+        description=(
+            "List calendar posts for one owned location. This read-only action costs "
+            "no credits."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=True, destructiveHint=False, openWorldHint=False
+        ),
+    )
+    async def list_scheduled_posts(
+        location_id: str,
+        status: Literal["all", "scheduled", "publishing", "published", "failed"] = "scheduled",
+        from_time: datetime | None = None,
+        to_time: datetime | None = None,
+        limit: int = Field(default=50, ge=1, le=100),
+    ) -> ScheduledPostList:
+        return await read_service.list_scheduled_posts(
+            _subject(), location_id, status, from_time, to_time, limit
+        )
+
+    @server.tool(
+        name="schedule_post",
+        title="Schedule a business post",
+        description=(
+            "Schedule an approved text, photo, or video item for Google publication. "
+            "Call only after the user explicitly confirms the location, content, exact "
+            "time, and 5-credit charge. Media must use a durable public HTTPS URL."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=True,
+        ),
+    )
+    async def schedule_post(
+        location_id: str,
+        publish_at: datetime,
+        caption: str = Field(default="", max_length=1500),
+        post_type: Literal["LOCAL_POST", "PHOTO", "VIDEO"] = "LOCAL_POST",
+        media_url: HttpUrl | None = None,
+    ) -> ScheduledPostResult:
+        return await read_service.schedule_post(
+            _subject(), location_id, publish_at, caption, post_type, media_url
+        )
+
+    @server.tool(
+        name="cancel_scheduled_post",
+        title="Cancel a scheduled post",
+        description=(
+            "Permanently remove one pending scheduled post. Call only after the user "
+            "explicitly confirms cancellation. The original 5-credit charge is not refunded."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=True,
+            idempotentHint=False,
+            openWorldHint=False,
+        ),
+    )
+    async def cancel_scheduled_post(
+        location_id: str,
+        post_id: str = Field(max_length=100),
+    ) -> CancelledPost:
+        return await read_service.cancel_scheduled_post(
+            _subject(), location_id, post_id
+        )
 
     return server
 

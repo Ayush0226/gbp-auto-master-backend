@@ -29,6 +29,10 @@ async def lifespan(application):
         (await run_in_threadpool(lambda: application.state.db.table('account_token_ledger').select('id').limit(0).execute()))
     except Exception:
         raise RuntimeError('Database migration 001 must be applied before starting this backend') from None
+    try:
+        (await run_in_threadpool(lambda: application.state.db.table('calendar_posts').select('publish_at').limit(0).execute()))
+    except Exception:
+        raise RuntimeError('Database migration 002 must be applied before starting this backend') from None
     async with gbp_mcp.session_manager.run():
         yield
 
@@ -58,11 +62,6 @@ else:
     supabase = None
 
 app.state.db = supabase
-
-gbp_mcp = create_gbp_mcp_server(supabase)
-gbp_mcp_http = gbp_mcp.streamable_http_app(
-    transport_security=mcp_transport_security(),
-)
 
 
 @app.get("/.well-known/oauth-protected-resource")
@@ -146,7 +145,7 @@ class TopUpRequest(RequestModel):
     promo_code: str = ''
 
 # ─── Token System Helpers ───
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 async def get_token_balance(location_id: str | None, user_id: str) -> float:
     # All Google profiles draw from the same signed-in account balance.
@@ -1165,9 +1164,8 @@ async def api_refresh_google_token(req: RefreshTokenRequest):
 
 @app.get("/api/cron/publish-scheduled")
 async def publish_scheduled_posts():
-    from zoneinfo import ZoneInfo
-    today = datetime.now(ZoneInfo(os.getenv('BUSINESS_TIMEZONE', 'Asia/Kolkata'))).date().isoformat()
-    posts = (await run_in_threadpool(lambda: supabase.table('calendar_posts').select('*').eq('status','scheduled').lte('post_date',today).execute())).data
+    due = datetime.now(timezone.utc).isoformat()
+    posts = (await run_in_threadpool(lambda: supabase.table('calendar_posts').select('*').eq('status','scheduled').lte('publish_at',due).execute())).data
     published = 0
     failed = 0
     for post in posts:
@@ -1571,6 +1569,16 @@ async def run_review_job():
         raise HTTPException(502, f'{sent} replies sent; {failed} operations need attention. Inspect token_operations and Google connections.')
     return {'status':'success','message':f'AI sent {sent} replies'}
 
+
+# Build MCP only after the legacy helpers it reuses have been defined.
+gbp_mcp = create_gbp_mcp_server(
+    supabase,
+    google_token_getter=get_offline_access_token,
+    ai_reply_generator=generate_ai_reply,
+)
+gbp_mcp_http = gbp_mcp.streamable_http_app(
+    transport_security=mcp_transport_security(),
+)
 
 # Keep this catch-all mount last. Starlette evaluates routes in declaration order,
 # so every existing HTTP API route above remains reachable and /mcp is handled by

@@ -128,7 +128,7 @@
                 "reviewer_name": {"type": "string"},
                 "rating": {"type": "integer", "minimum": 1, "maximum": 5},
                 "comment": {"type": "string"},
-                "created_at": {"type": "string", "format": "date-time"},
+                "created_at": {"type": ["string", "null"], "format": "date-time"},
                 "has_reply": {"type": "boolean"},
                 "reply_text": {"type": ["string", "null"]}
               },
@@ -221,8 +221,8 @@
         "properties": {
           "location_id": {"type": "string", "pattern": "^locations/[A-Za-z0-9_-]+$"},
           "status": {"type": "string", "enum": ["all", "scheduled", "publishing", "published", "failed"], "default": "scheduled"},
-          "from": {"type": ["string", "null"], "format": "date-time"},
-          "to": {"type": ["string", "null"], "format": "date-time"},
+          "from_time": {"type": ["string", "null"], "format": "date-time"},
+          "to_time": {"type": ["string", "null"], "format": "date-time"},
           "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}
         },
         "required": ["location_id"],
@@ -318,13 +318,6 @@
     }
   ],
   "implementationGaps": [
-    "MCP/OAuth request context must derive the user identity; current HTTP endpoints accept user_id and Google tokens in request bodies.",
-    "Google refresh tokens must move to server-managed credential storage that MCP handlers can use.",
-    "Review listing needs server-side reply filtering and Google page-token support.",
-    "A single-review draft handler is needed; the current draft endpoint is an administrator batch operation.",
-    "Manual reply publishing must enforce ownership, reserve 2.5 credits, and reconcile uncertain Google delivery.",
-    "A user-owned calendar list handler is needed for MCP.",
-    "Calendar storage currently records only a date; publish_at requires a timezone-aware timestamp migration and worker update.",
-    "MCP media input needs a secure upload or durable HTTPS URL workflow before photo and video scheduling can be reliable."
+    "Photo and video scheduling currently requires a durable public HTTPS media URL; direct MCP media upload is not yet implemented."
   ]
 }

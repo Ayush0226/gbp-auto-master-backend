@@ -29,6 +29,7 @@ insert into token_ledger(id,user_id,amount,action) values(1,'${owner}',60,'onboa
 `);
 
 await db.exec(await readFile(new URL('../../migrations/001_secure_billing.sql', import.meta.url), 'utf8'));
+await db.exec(await readFile(new URL('../../migrations/002_mcp_scheduling.sql', import.meta.url), 'utf8'));
 let assertions = 0;
 async function scalar(sql, params=[]) { return Object.values((await db.query(sql, params)).rows[0])[0]; }
 async function balance(user=owner) { return Number(await scalar('select tokens_balance from user_profiles where id=$1',[user])); }
@@ -77,6 +78,9 @@ equal(await balance(),1965,'monthly grant runs once and credits the shared accou
 await db.query('select schedule_post($1,$2,$3,$4,$5,$6)',[owner,'locations/2','2026-10-04','Hello',null,'LOCAL_POST']);
 equal(await balance(),1960);
 equal(Number(await scalar('select count(*) from calendar_posts')),1);
+await db.query(`select schedule_post_at($1,$2,now()+interval '1 day',$3,$4,$5)`,[owner,'locations/2','Timed post',null,'LOCAL_POST']);
+equal(await balance(),1955,'exact-time MCP scheduling charges once');
+equal(Number(await scalar('select count(*) from calendar_posts where publish_at is not null')),2,'all scheduled posts have a publication timestamp');
 equal(await scalar('select claim_job($1)',['cron']),true);
 equal(await scalar('select claim_job($1)',['cron']),false);
 await db.exec(`set role authenticated; set request.jwt.claim.sub='${other}';`);
