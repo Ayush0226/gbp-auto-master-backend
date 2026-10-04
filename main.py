@@ -1,7 +1,9 @@
 import os
+import re
 import razorpay
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, field_validator
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -17,12 +19,14 @@ from contextlib import asynccontextmanager
 from starlette.concurrency import run_in_threadpool
 from mcp_server import create_gbp_mcp_server, mcp_transport_security
 from platform_api import router as platform_router
+from rank_service import RANK_REPORT_COST, run_local_rank_scan
 
 
 @asynccontextmanager
 async def lifespan(application):
     required = ('SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'RAZORPAY_KEY_ID',
-                'RAZORPAY_KEY_SECRET', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GROQ_API_KEY')
+                'RAZORPAY_KEY_SECRET', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GROQ_API_KEY',
+                'SERPAPI_KEY')
     missing = [name for name in required if not os.getenv(name)]
     if missing:
         raise RuntimeError('Missing environment variables: ' + ', '.join(missing))
@@ -75,6 +79,14 @@ app.include_router(platform_router)
 async def oauth_protected_resource_metadata():
     """Advertise the Supabase authorization server to MCP clients."""
     return protected_resource_metadata()
+
+
+@app.get("/.well-known/openai-apps-challenge", response_class=PlainTextResponse)
+async def openai_apps_challenge():
+    token = os.getenv("OPENAI_APPS_CHALLENGE", "").strip()
+    if not token:
+        raise HTTPException(404, "Domain verification challenge is not configured")
+    return token
 
 class RequestModel(BaseModel):
     @field_validator('location_id', check_fields=False)
@@ -136,9 +148,9 @@ class RegenerateReplyRequest(RequestModel):
 
 class RankReportRequest(RequestModel):
     user_id: str
-    keyword: str
+    keyword: str = Field(min_length=1, max_length=120)
     location_id: str
-    access_token: str
+    request_id: str = Field(min_length=8, max_length=100)
 
 class UserProfileRequest(RequestModel):
     user_id: str
@@ -1518,34 +1530,28 @@ async def regenerate_reply(req: RegenerateReplyRequest):
 
 @app.post("/api/rank/generate-report")
 async def generate_rank_report(req: RankReportRequest):
-    profile = await ensure_location_profile(req.location_id, req.user_id)
-    if not PRICING_PLANS[profile['plan_type']]['competitor']:
-        raise HTTPException(403, 'Competitor reports require a Growth or Yearly plan')
-    maps_key = os.getenv('GOOGLE_MAPS_API_KEY')
-    if not maps_key: raise HTTPException(503, 'Competitor lookup is not configured')
-    operation = 'report:' + uuid4().hex
-    (await run_in_threadpool(lambda: reserve_operation(req.location_id, req.user_id, 10, operation)))
+    await ensure_location_profile(req.location_id, req.user_id)
+    if not re.fullmatch(r'[A-Za-z0-9_-]{8,100}', req.request_id):
+        raise HTTPException(422, 'request_id may contain only letters, numbers, underscores, and hyphens')
+    operation = 'rank-report:' + req.request_id
+    (await run_in_threadpool(lambda: reserve_operation(req.location_id, req.user_id, RANK_REPORT_COST, operation)))
     try:
-        response = (await run_in_threadpool(lambda: requests.get(f'https://mybusinessbusinessinformation.googleapis.com/v1/{req.location_id}',
-            headers={'Authorization': f'Bearer {req.access_token}'}, params={'readMask': 'title,storefrontAddress'})))
-        if not response.ok: raise HTTPException(502, 'Could not load your business details')
-        business = response.json()
-        address = ', '.join(str(v) for k,v in business.get('storefrontAddress', {}).items() if k in ('locality','administrativeArea','regionCode'))
-        if not address: raise HTTPException(422, 'A business address is required for local competitor lookup')
-        response = (await run_in_threadpool(lambda: requests.get('https://maps.googleapis.com/maps/api/place/textsearch/json', params={'query': f'{req.keyword} near {address}', 'key': maps_key})))
-        if not response.ok or response.json().get('status') != 'OK':
-            raise HTTPException(502, 'Competitor data is unavailable; no tokens charged')
-        competitors = [{'name': p['name'], 'rating': p.get('rating'), 'reviews': p.get('user_ratings_total')} for p in response.json().get('results', []) if p.get('name') != business.get('title')][:10]
-        if not competitors: raise HTTPException(404, 'No competitors found; no tokens charged')
-        prompt = f"Analyze these Google Places results for {business.get('title')} in {address}, keyword {req.keyword}: {competitors}. Distinguish measured ratings and review counts from hypotheses. This is not a measured search-rank report. Do not invent facts. Provide a concise action plan."
-        report = (await run_in_threadpool(lambda: call_groq_with_fallback(os.getenv('GROQ_API_KEY'), [{'role':'user','content':prompt}]))).choices[0].message.content
-        if not report: raise HTTPException(502, 'AI returned an empty report')
-    except Exception:
+        user = (await run_in_threadpool(lambda: supabase.auth.admin.get_user_by_id(req.user_id))).user
+        refresh_token = (user.user_metadata or {}).get('google_refresh_token') if user else None
+        if not refresh_token:
+            raise HTTPException(409, 'Reconnect Google Business Profile before generating a rank report')
+        token = await run_in_threadpool(lambda: get_offline_access_token(refresh_token))
+        report = await run_in_threadpool(lambda: run_local_rank_scan(
+            location_id=req.location_id, keyword=req.keyword, google_access_token=token,
+        ))
+    except Exception as error:
         (await run_in_threadpool(lambda: finish_operation(operation, False)))
-        raise
+        if isinstance(error, HTTPException):
+            raise
+        raise HTTPException(502, str(error)) from error
     (await run_in_threadpool(lambda: finish_operation(operation, True)))
-    return {'status':'success','keyword':req.keyword,'business':business.get('title'),'location':address,
-            'competitors':competitors,'report':report,'balance':await get_token_balance(req.location_id,req.user_id)}
+    return {'status':'success', **report, 'credits_charged': RANK_REPORT_COST,
+            'balance':await get_token_balance(req.location_id,req.user_id)}
 
 
 

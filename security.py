@@ -23,6 +23,7 @@ async def authorize(request: Request):
         "/api/payment/key",
         "/.well-known/oauth-protected-resource",
         "/.well-known/oauth-protected-resource/mcp",
+        "/.well-known/openai-apps-challenge",
     }:
         return
     authorization = request.headers.get("authorization", "")

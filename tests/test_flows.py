@@ -68,11 +68,12 @@ def test_promo_models_are_distinct():
 
 
 def test_empty_competitor_results_refund(monkeypatch):
-    monkeypatch.setenv('GOOGLE_MAPS_API_KEY','test')
-    main.requests.get.side_effect=[
-        SimpleNamespace(ok=True,json=lambda:{'title':'Business','storefrontAddress':{'locality':'City'}}),
-        SimpleNamespace(ok=True,json=lambda:{'status':'ZERO_RESULTS','results':[]})]
-    req=main.RankReportRequest(user_id='owner',location_id='123',keyword='plumber',access_token='token')
+    monkeypatch.setattr(main, 'get_offline_access_token', MagicMock(return_value='token'))
+    monkeypatch.setattr(main, 'run_local_rank_scan', MagicMock(side_effect=RuntimeError('No local results')))
+    main.supabase.auth.admin.get_user_by_id.return_value = SimpleNamespace(
+        user=SimpleNamespace(user_metadata={'google_refresh_token':'refresh'})
+    )
+    req=main.RankReportRequest(user_id='owner',location_id='123',keyword='plumber',request_id='scan-12345678')
     with pytest.raises(HTTPException): asyncio.run(main.generate_rank_report(req))
     assert main.finish_operation.call_args.args[1] is False
 

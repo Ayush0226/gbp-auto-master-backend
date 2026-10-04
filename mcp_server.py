@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from starlette.concurrency import run_in_threadpool
 
 from mcp_auth import DEFAULT_MCP_RESOURCE_URL, OAUTH_SCOPES
+from rank_service import RANK_REPORT_COST, run_local_rank_scan
 
 
 SERVER_INSTRUCTIONS = (
@@ -52,6 +53,35 @@ class ActionCosts(BaseModel):
 
     publish_review_reply: float = 2.5
     schedule_post: float = 5.0
+    local_rank_report: float = 10.0
+
+
+class LocalRankResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    position: int = Field(ge=1, le=11)
+    business_name: str
+    rating: float | None
+    reviews: int | None
+    address: str | None
+    place_id: str | None
+    is_target: bool
+
+
+class LocalRankReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["success"] = "success"
+    request_id: str
+    keyword: str
+    location_id: str
+    search_area: str
+    target_business: str
+    actual_rank: int | None = Field(default=None, ge=1, le=11)
+    found_in_top_11: bool
+    results: list[LocalRankResult]
+    credits_charged: float = 10.0
+    remaining_balance: float
 
 
 class CreditBalance(BaseModel):
@@ -440,6 +470,56 @@ class GBPReadService:
         return CreditBalance(
             balance=max(0.0, float(account.get("tokens_balance") or 0)),
             action_costs=ActionCosts(),
+        )
+
+    async def generate_local_rank_report(
+        self, user_id: str, location_id: str, keyword: str, request_id: str
+    ) -> LocalRankReport:
+        profile = await self._owned_location(user_id, location_id)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{8,100}", request_id):
+            raise ValueError("request_id must be 8-100 letters, numbers, underscores, or hyphens")
+        operation = "rank-report:" + request_id
+        reservation = (
+            await run_in_threadpool(
+                lambda: self.db.rpc(
+                    "reserve_tokens",
+                    {
+                        "p_operation": operation,
+                        "p_location": profile["location_id"],
+                        "p_user": user_id,
+                        "p_amount": RANK_REPORT_COST,
+                    },
+                ).execute()
+            )
+        ).data or {}
+        if not reservation.get("success"):
+            raise ValueError(reservation.get("error") or "Insufficient credits")
+        try:
+            access_token = await self._google_access_token(user_id)
+            scan = await run_in_threadpool(
+                lambda: run_local_rank_scan(
+                    location_id=profile["location_id"],
+                    keyword=keyword,
+                    google_access_token=access_token,
+                )
+            )
+        except Exception:
+            await run_in_threadpool(
+                lambda: self.db.rpc(
+                    "finish_tokens", {"p_operation": operation, "p_success": False}
+                ).execute()
+            )
+            raise
+        await run_in_threadpool(
+            lambda: self.db.rpc(
+                "finish_tokens", {"p_operation": operation, "p_success": True}
+            ).execute()
+        )
+        balance = await self.get_credit_balance(user_id)
+        return LocalRankReport(
+            request_id=request_id,
+            remaining_balance=balance.balance,
+            **scan,
         )
 
     async def list_business_accounts(self, user_id: str) -> BusinessAccountList:
@@ -1159,6 +1239,32 @@ def create_gbp_mcp_server(
     )
     async def get_credit_balance() -> CreditBalance:
         return await read_service.get_credit_balance(_subject())
+
+    @server.tool(
+        name="generate_local_rank_report",
+        title="Generate local Google rank report",
+        description=(
+            "Measure the selected connected business's actual position for one keyword "
+            "within the first 11 Google local results using SerpApi. This costs exactly "
+            "10 GBP Master credits. Before calling, show the keyword, location, and charge "
+            "and obtain explicit user confirmation. Supply a new request_id and reuse it "
+            "if retrying the same confirmed scan so the account cannot be charged twice."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    async def generate_local_rank_report(
+        location_id: str,
+        keyword: str = Field(min_length=1, max_length=120),
+        request_id: str = Field(min_length=8, max_length=100),
+    ) -> LocalRankReport:
+        return await read_service.generate_local_rank_report(
+            _subject(), location_id, keyword, request_id
+        )
 
     @server.tool(
         name="list_business_accounts",

@@ -144,6 +144,7 @@ def test_all_contract_tools_are_registered(monkeypatch):
         "list_scheduled_posts",
         "schedule_post",
         "cancel_scheduled_post",
+        "generate_local_rank_report",
     }
     assert by_name["list_locations"].annotations.read_only_hint is True
     assert by_name["get_credit_balance"].annotations.read_only_hint is True
@@ -164,6 +165,8 @@ def test_all_contract_tools_are_registered(monkeypatch):
     assert by_name["publish_review_reply"].annotations.read_only_hint is False
     assert by_name["schedule_post"].annotations.read_only_hint is False
     assert by_name["cancel_scheduled_post"].annotations.destructive_hint is True
+    assert by_name["generate_local_rank_report"].annotations.read_only_hint is False
+    assert by_name["generate_local_rank_report"].annotations.idempotent_hint is True
     assert by_name["list_locations"].output_schema["additionalProperties"] is False
     for tool in tools:
         assert "user_id" not in tool.input_schema.get("properties", {})
