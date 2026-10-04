@@ -1110,26 +1110,29 @@ async def scrub_calendar_images():
     but keeps the text caption in the database.
     """
     try:
-        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        today = datetime.now(timezone.utc).date().isoformat()
         
         # 1. Fetch published posts older than today that still have images
         posts = (await run_in_threadpool(lambda: supabase.table('calendar_posts')\
             .select('*')\
             .eq('status', 'published')\
-            .lt('post_date', yesterday)\
-            .not_is('image_url', 'null')\
+            .lt('post_date', today)\
             .execute()))
             
         deleted_count = 0
         
         for p in posts.data:
+            if not p.get('image_url'):
+                continue
             # image_url format: https://xyz.supabase.co/storage/v1/object/public/calendar_images/USER_ID/FILENAME.jpg
             # Extract just the "USER_ID/FILENAME.jpg" part
             if 'calendar_images/' in p['image_url']:
                 file_path = p['image_url'].split('calendar_images/')[1]
                 
                 # Delete from storage
-                res = supabase.storage.from_('calendar_images').remove([file_path])
+                res = await run_in_threadpool(
+                    lambda file_path=file_path: supabase.storage.from_('calendar_images').remove([file_path])
+                )
                 
                 # If deleted successfully, set image_url to null in db
                 if not getattr(res, 'error', None):
