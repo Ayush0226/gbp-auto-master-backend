@@ -52,7 +52,7 @@ def verify_order(db, gateway, req, kind):
     if not rows:
         raise HTTPException(404, 'Order not found')
     order = rows[0]
-    if order['kind'] != kind or req.location_id != order['location_id']:
+    if order['kind'] != kind or req.location_id != order.get('location_id'):
         raise HTTPException(400, 'Order does not match this purchase')
     if kind == 'subscription' and req.plan_id != order['product_id']:
         raise HTTPException(400, 'Plan does not match the original order')

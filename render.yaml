@@ -22,6 +22,12 @@ services:
         sync: false
       - key: GOOGLE_MAPS_API_KEY
         sync: false
+      - key: GOOGLE_PUBSUB_TOPIC
+        sync: false
+      - key: GOOGLE_PUBSUB_AUDIENCE
+        sync: false
+      - key: GOOGLE_PUBSUB_SERVICE_ACCOUNT
+        sync: false
       - key: CRON_SECRET
         sync: false
       - key: ALLOWED_ORIGINS

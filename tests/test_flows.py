@@ -104,15 +104,57 @@ def test_topup_and_balance_do_not_require_a_business_profile():
     assert main.TokenBalanceRequest(user_id='owner').location_id is None
 
 
+def test_campaign_payload_maps_offer_fields_for_google():
+    payload = main._campaign_google_payload({
+        'topic_type': 'OFFER',
+        'language_code': 'en',
+        'summary': 'Save this week',
+        'call_to_action': {'action_type': 'LEARN_MORE', 'url': 'https://example.com'},
+        'event_details': {
+            'title': 'Autumn offer',
+            'start_time': '2030-10-01T10:00:00+05:30',
+            'end_time': '2030-10-07T18:00:00+05:30',
+        },
+        'offer_details': {'coupon_code': 'SAVE20', 'terms_conditions': 'One per customer'},
+    }, {'media_kind': 'photo', 'public_url': 'https://example.com/photo.jpg'})
+    assert payload['topicType'] == 'OFFER'
+    assert payload['event']['schedule']['startDate'] == {'year': 2030, 'month': 10, 'day': 1}
+    assert payload['offer']['couponCode'] == 'SAVE20'
+    assert payload['media'][0]['mediaFormat'] == 'PHOTO'
+
+
+def test_campaign_payload_feature_gates_video_posts():
+    with pytest.raises(ValueError, match='Video attachments'):
+        main._campaign_google_payload(
+            {'topic_type': 'STANDARD', 'summary': 'Video'},
+            {'media_kind': 'video', 'public_url': 'https://example.com/video.mp4'},
+        )
+
+
 def test_all_private_routes_reject_anonymous_requests(monkeypatch):
     from fastapi.testclient import TestClient
     monkeypatch.setattr(main.app.state,'db',main.supabase)
     client=TestClient(main.app)
     for route in main.app.routes:
-        path=route.path
+        path=getattr(route,'path',None)
+        if not path:
+            continue
         if not path.startswith('/api/') or path in ('/api/health','/api/payment/key') or path.startswith(('/api/cron/','/api/webhooks/')):
             continue
         method='POST' if 'POST' in route.methods else 'GET'
+        response=client.request(method,path,json={})
+        assert response.status_code==401,(path,response.status_code)
+    for method,path in (
+        ('GET','/api/platform/overview'),
+        ('GET','/api/platform/accounts'),
+        ('GET','/api/platform/automation-rules'),
+        ('GET','/api/platform/campaigns'),
+        ('GET','/api/platform/media'),
+        ('GET','/api/platform/audit'),
+        ('PUT','/api/platform/preferences'),
+        ('PUT','/api/platform/automation-rules'),
+        ('POST','/api/platform/campaigns'),
+    ):
         response=client.request(method,path,json={})
         assert response.status_code==401,(path,response.status_code)
 

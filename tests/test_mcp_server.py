@@ -89,9 +89,8 @@ def test_list_locations_is_owner_scoped_and_uses_cached_names():
     assert response.locations[0].location_id == "locations/123"
     assert response.locations[0].name == "Ayush Cafe"
     assert response.locations[0].plan == "yearly"
-    db.table.return_value.select.return_value.eq.assert_called_once_with(
-        "user_id", "account-123"
-    )
+    db.table.return_value.select.return_value.eq.assert_any_call("user_id", "account-123")
+    assert db.table.return_value.select.return_value.eq.call_count == 2
 
 
 def test_credit_balance_refreshes_locations_and_returns_action_costs():
@@ -127,6 +126,18 @@ def test_all_contract_tools_are_registered(monkeypatch):
     assert set(by_name) == {
         "list_locations",
         "get_credit_balance",
+        "list_business_accounts",
+        "get_account_overview",
+        "list_review_automation_rules",
+        "configure_review_automation_rule",
+        "list_content_campaigns",
+        "create_content_campaign",
+        "schedule_content_campaign",
+        "cancel_content_campaign",
+        "list_review_reply_jobs",
+        "approve_review_reply_job",
+        "cancel_review_reply_job",
+        "list_media_assets",
         "list_reviews",
         "draft_review_reply",
         "publish_review_reply",
@@ -138,6 +149,18 @@ def test_all_contract_tools_are_registered(monkeypatch):
     assert by_name["get_credit_balance"].annotations.read_only_hint is True
     assert by_name["list_reviews"].annotations.read_only_hint is True
     assert by_name["draft_review_reply"].annotations.read_only_hint is True
+    assert by_name["list_business_accounts"].annotations.read_only_hint is True
+    assert by_name["get_account_overview"].annotations.read_only_hint is True
+    assert by_name["list_review_automation_rules"].annotations.read_only_hint is True
+    assert by_name["list_content_campaigns"].annotations.read_only_hint is True
+    assert by_name["configure_review_automation_rule"].annotations.read_only_hint is False
+    assert by_name["create_content_campaign"].annotations.read_only_hint is False
+    assert by_name["schedule_content_campaign"].annotations.read_only_hint is False
+    assert by_name["cancel_content_campaign"].annotations.destructive_hint is True
+    assert by_name["list_review_reply_jobs"].annotations.read_only_hint is True
+    assert by_name["approve_review_reply_job"].annotations.read_only_hint is False
+    assert by_name["cancel_review_reply_job"].annotations.destructive_hint is True
+    assert by_name["list_media_assets"].annotations.read_only_hint is True
     assert by_name["publish_review_reply"].annotations.read_only_hint is False
     assert by_name["schedule_post"].annotations.read_only_hint is False
     assert by_name["cancel_scheduled_post"].annotations.destructive_hint is True

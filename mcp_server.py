@@ -23,10 +23,11 @@ from mcp_auth import DEFAULT_MCP_RESOURCE_URL, OAUTH_SCOPES
 
 
 SERVER_INSTRUCTIONS = (
-    "Use GBP Master to inspect and manage the authenticated user's Google Business "
-    "Profile locations. Resolve a location with list_locations before using a "
-    "location-scoped tool. Never ask for or return Google access tokens, refresh "
-    "tokens, Supabase user IDs, or Google account IDs."
+    "Use GBP Master to manage the authenticated user's Google Business Profile accounts, "
+    "locations, reviews, review automation, content campaigns, scheduled posts and shared "
+    "credits. Resolve locations before location-scoped actions. Show the exact public text, "
+    "targets, time and credit charge before a write that publishes or schedules content. "
+    "Never ask for or return Google access tokens, refresh tokens or Supabase user IDs."
 )
 
 
@@ -35,6 +36,7 @@ class LocationSummary(BaseModel):
 
     location_id: str
     name: str
+    account_id: str | None = None
     plan: str
     subscription_expires_at: datetime | None
 
@@ -141,6 +143,164 @@ class CancelledPost(BaseModel):
     credits_refunded: float = 0.0
 
 
+class BusinessAccountSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account_id: str
+    name: str
+    location_count: int = Field(ge=0)
+
+
+class BusinessAccountList(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    accounts: list[BusinessAccountSummary]
+
+
+class AccountOverview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    plan: str
+    subscription_status: str
+    subscription_expires_at: datetime | None
+    credit_balance: float
+    google_account_count: int = Field(ge=0)
+    location_count: int = Field(ge=0)
+    automation_rule_count: int = Field(ge=0)
+    scheduled_campaign_count: int = Field(ge=0)
+
+
+class AutomationRuleSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rule_id: str
+    name: str
+    location_id: str | None
+    enabled: bool
+    mode: Literal["draft", "approval", "auto_publish"]
+    min_rating: int = Field(ge=1, le=5)
+    max_rating: int = Field(ge=1, le=5)
+    tone: str
+    language: str
+    delay_minutes: int = Field(ge=0)
+    daily_limit: int = Field(ge=1)
+
+
+class AutomationRuleList(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rules: list[AutomationRuleSummary]
+
+
+class AutomationRuleResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["saved"] = "saved"
+    rule: AutomationRuleSummary
+
+
+class CampaignSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    campaign_id: str
+    title: str
+    topic_type: Literal["STANDARD", "EVENT", "OFFER"]
+    summary: str
+    timezone: str
+    status: str
+    scheduled_for: datetime | None
+    location_ids: list[str]
+
+
+class CampaignList(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    campaigns: list[CampaignSummary]
+
+
+class CampaignDraftResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["draft"] = "draft"
+    campaign_id: str
+    location_count: int = Field(ge=1)
+    scheduling_cost: float = Field(ge=0)
+
+
+class CampaignScheduleResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["scheduled"] = "scheduled"
+    campaign_id: str
+    location_count: int = Field(ge=1)
+    scheduled_for: datetime
+    credits_charged: float = Field(ge=0)
+    remaining_balance: float = Field(ge=0)
+
+
+class CampaignCancelResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["cancelled"] = "cancelled"
+    campaign_id: str
+    credits_refunded: float = 0
+
+
+class ReviewReplyJobSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str
+    location_id: str
+    review_id: str
+    rating: int = Field(ge=1, le=5)
+    review_text: str
+    draft_text: str
+    status: Literal["draft", "pending_approval", "scheduled", "publishing", "published", "failed", "cancelled"]
+    scheduled_for: datetime | None
+    last_error: str | None
+    credits_charged: float = Field(ge=0)
+
+
+class ReviewReplyJobList(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    jobs: list[ReviewReplyJobSummary]
+
+
+class ReviewReplyApprovalResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["scheduled"] = "scheduled"
+    job_id: str
+    scheduled_for: datetime
+    credits_due: float = 2.5
+
+
+class ReviewReplyCancellationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["cancelled"] = "cancelled"
+    job_id: str
+    credits_refunded: float = 0
+
+
+class MediaAssetSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: str
+    media_kind: Literal["photo", "video"]
+    mime_type: str
+    public_url: str | None
+    status: str
+    created_at: datetime | None
+
+
+class MediaAssetList(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    assets: list[MediaAssetSummary]
+
+
 STAR_RATINGS = {"ONE": 1, "TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 5}
 
 
@@ -212,7 +372,7 @@ class GBPReadService:
         rows = (
             await run_in_threadpool(
                 lambda: self.db.table("location_profiles")
-                .select("location_id,plan_type,subscription_end")
+                .select("location_id,account_id,plan_type,subscription_end")
                 .eq("user_id", user_id)
                 .execute()
             )
@@ -226,11 +386,22 @@ class GBPReadService:
             for item in cached
             if isinstance(item, dict) and item.get("id")
         }
+        subscription_rows = (
+            await run_in_threadpool(
+                lambda: self.db.table("account_subscriptions")
+                .select("plan_type,status,expires_at")
+                .eq("user_id", user_id)
+                .execute()
+            )
+        ).data or []
+        account_subscription = subscription_rows[0] if subscription_rows and "status" in subscription_rows[0] else None
         now = datetime.now(timezone.utc)
         locations: list[LocationSummary] = []
         for row in rows:
-            expires_at = _parse_datetime(row.get("subscription_end"))
-            plan = row.get("plan_type") or "free"
+            expires_at = _parse_datetime((account_subscription or {}).get("expires_at") or row.get("subscription_end"))
+            plan = (account_subscription or {}).get("plan_type") or row.get("plan_type") or "free"
+            if account_subscription and account_subscription.get("status") != "active":
+                plan = "free"
             if plan != "free" and (expires_at is None or expires_at <= now):
                 plan = "free"
             location_id = row["location_id"]
@@ -238,6 +409,7 @@ class GBPReadService:
                 LocationSummary(
                     location_id=location_id,
                     name=names.get(location_id) or "Business",
+                    account_id=row.get("account_id"),
                     plan=plan,
                     subscription_expires_at=expires_at,
                 )
@@ -253,7 +425,7 @@ class GBPReadService:
                 .execute()
             )
         ).data or []
-        for row in location_rows:
+        for row in location_rows[:1]:
             await run_in_threadpool(
                 lambda location_id=row["location_id"]: self.db.rpc(
                     "refresh_monthly_tokens",
@@ -269,6 +441,280 @@ class GBPReadService:
             balance=max(0.0, float(account.get("tokens_balance") or 0)),
             action_costs=ActionCosts(),
         )
+
+    async def list_business_accounts(self, user_id: str) -> BusinessAccountList:
+        accounts = (
+            await run_in_threadpool(
+                lambda: self.db.table("gbp_accounts")
+                .select("resource_name,display_name")
+                .eq("user_id", user_id)
+                .order("display_name")
+                .execute()
+            )
+        ).data or []
+        locations = (
+            await run_in_threadpool(
+                lambda: self.db.table("location_profiles")
+                .select("account_id")
+                .eq("user_id", user_id)
+                .execute()
+            )
+        ).data or []
+        counts: dict[str, int] = {}
+        for location in locations:
+            account_id = location.get("account_id")
+            if account_id:
+                counts[account_id] = counts.get(account_id, 0) + 1
+        return BusinessAccountList(accounts=[
+            BusinessAccountSummary(
+                account_id=row["resource_name"],
+                name=row.get("display_name") or "Google Business Profile account",
+                location_count=counts.get(row["resource_name"], 0),
+            ) for row in accounts
+        ])
+
+    async def get_account_overview(self, user_id: str) -> AccountOverview:
+        balance = await self.get_credit_balance(user_id)
+        subscription_rows, accounts, locations, rules, campaigns = await run_in_threadpool(
+            lambda: (
+                self.db.table("account_subscriptions").select("plan_type,status,expires_at").eq("user_id", user_id).execute().data or [],
+                self.db.table("gbp_accounts").select("resource_name").eq("user_id", user_id).execute().data or [],
+                self.db.table("location_profiles").select("location_id").eq("user_id", user_id).execute().data or [],
+                self.db.table("review_automation_rules").select("id").eq("user_id", user_id).execute().data or [],
+                self.db.table("content_campaigns").select("id").eq("user_id", user_id).eq("status", "scheduled").execute().data or [],
+            )
+        )
+        subscription = subscription_rows[0] if subscription_rows else {}
+        return AccountOverview(
+            plan=subscription.get("plan_type") or "free",
+            subscription_status=subscription.get("status") or "active",
+            subscription_expires_at=_parse_datetime(subscription.get("expires_at")),
+            credit_balance=balance.balance,
+            google_account_count=len(accounts),
+            location_count=len(locations),
+            automation_rule_count=len(rules),
+            scheduled_campaign_count=len(campaigns),
+        )
+
+    async def list_automation_rules(self, user_id: str) -> AutomationRuleList:
+        rows = (
+            await run_in_threadpool(
+                lambda: self.db.table("review_automation_rules")
+                .select("id,name,location_id,enabled,mode,min_rating,max_rating,tone,language,delay_minutes,daily_limit")
+                .eq("user_id", user_id)
+                .order("created_at")
+                .execute()
+            )
+        ).data or []
+        return AutomationRuleList(rules=[self._automation_rule(row) for row in rows])
+
+    async def configure_automation_rule(
+        self,
+        user_id: str,
+        name: str,
+        location_id: str | None,
+        enabled: bool,
+        mode: Literal["draft", "approval", "auto_publish"],
+        min_rating: int,
+        max_rating: int,
+        tone: str,
+        language: str,
+        delay_minutes: int,
+        daily_limit: int,
+        custom_instructions: str,
+        blocked_terms: list[str],
+    ) -> AutomationRuleResult:
+        if min_rating > max_rating:
+            raise ValueError("Minimum rating cannot exceed maximum rating")
+        normalized_location = None
+        if location_id:
+            normalized_location = (await self._owned_location(user_id, location_id))["location_id"]
+        row = {
+            "user_id": user_id,
+            "location_id": normalized_location,
+            "name": name.strip(),
+            "enabled": enabled,
+            "mode": mode,
+            "min_rating": min_rating,
+            "max_rating": max_rating,
+            "tone": tone.strip(),
+            "language": language.strip(),
+            "delay_minutes": delay_minutes,
+            "daily_limit": daily_limit,
+            "custom_instructions": custom_instructions.strip(),
+            "blocked_terms": list(dict.fromkeys(term.strip() for term in blocked_terms if term.strip())),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        query = self.db.table("review_automation_rules").select("id").eq("user_id", user_id)
+        query = query.eq("location_id", normalized_location) if normalized_location else query.is_("location_id", "null")
+        existing = (await run_in_threadpool(query.execute)).data or []
+        if existing:
+            saved = await run_in_threadpool(
+                lambda: self.db.table("review_automation_rules").update(row).eq("id", existing[0]["id"]).eq("user_id", user_id).execute()
+            )
+        else:
+            saved = await run_in_threadpool(lambda: self.db.table("review_automation_rules").insert(row).execute())
+        return AutomationRuleResult(rule=self._automation_rule(saved.data[0]))
+
+    async def list_content_campaigns(
+        self, user_id: str, status: str, limit: int
+    ) -> CampaignList:
+        query = self.db.table("content_campaigns").select("id,title,topic_type,summary,timezone,status,scheduled_for").eq("user_id", user_id)
+        if status != "all":
+            query = query.eq("status", status)
+        campaigns = (
+            await run_in_threadpool(lambda: query.order("created_at", desc=True).limit(limit).execute())
+        ).data or []
+        ids = [row["id"] for row in campaigns]
+        deliveries = []
+        if ids:
+            deliveries = (
+                await run_in_threadpool(
+                    lambda: self.db.table("campaign_locations").select("campaign_id,location_id").eq("user_id", user_id).in_("campaign_id", ids).execute()
+                )
+            ).data or []
+        locations: dict[str, list[str]] = {}
+        for delivery in deliveries:
+            locations.setdefault(str(delivery["campaign_id"]), []).append(delivery["location_id"])
+        return CampaignList(campaigns=[CampaignSummary(
+            campaign_id=str(row["id"]), title=row["title"], topic_type=row["topic_type"],
+            summary=row.get("summary") or "", timezone=row.get("timezone") or "Asia/Kolkata",
+            status=row["status"], scheduled_for=_parse_datetime(row.get("scheduled_for")),
+            location_ids=locations.get(str(row["id"]), []),
+        ) for row in campaigns])
+
+    async def create_content_campaign(
+        self, user_id: str, title: str, topic_type: Literal["STANDARD", "EVENT", "OFFER"],
+        summary: str, timezone_name: str, location_ids: list[str],
+        call_to_action: dict[str, Any] | None, event_details: dict[str, Any] | None,
+        offer_details: dict[str, Any] | None, media_asset_id: str | None,
+    ) -> CampaignDraftResult:
+        normalized: list[str] = []
+        for location_id in dict.fromkeys(location_ids):
+            normalized.append((await self._owned_location(user_id, location_id))["location_id"])
+        if not normalized:
+            raise ValueError("Select at least one location")
+        result = (
+            await run_in_threadpool(
+                lambda: self.db.rpc("create_content_campaign", {
+                    "p_user": user_id, "p_title": title.strip(), "p_topic_type": topic_type,
+                    "p_summary": summary.strip(), "p_timezone": timezone_name,
+                    "p_location_ids": normalized, "p_call_to_action": call_to_action,
+                    "p_event_details": event_details, "p_offer_details": offer_details,
+                    "p_media_asset": media_asset_id,
+                }).execute()
+            )
+        ).data or {}
+        return CampaignDraftResult(
+            campaign_id=str(result["campaign_id"]), location_count=int(result["location_count"]),
+            scheduling_cost=int(result["location_count"]) * 5,
+        )
+
+    async def schedule_content_campaign(
+        self, user_id: str, campaign_id: str, publish_at: datetime
+    ) -> CampaignScheduleResult:
+        scheduled_for = _as_utc(publish_at)
+        result = (
+            await run_in_threadpool(
+                lambda: self.db.rpc("schedule_content_campaign", {
+                    "p_user": user_id, "p_campaign": campaign_id,
+                    "p_publish_at": scheduled_for.isoformat(),
+                }).execute()
+            )
+        ).data or {}
+        return CampaignScheduleResult(
+            campaign_id=str(result["campaign_id"]), location_count=int(result["location_count"]),
+            scheduled_for=scheduled_for, credits_charged=float(result["credits_charged"]),
+            remaining_balance=float(result.get("balance") or 0),
+        )
+
+    async def cancel_content_campaign(self, user_id: str, campaign_id: str) -> CampaignCancelResult:
+        result = (
+            await run_in_threadpool(
+                lambda: self.db.rpc("cancel_content_campaign", {"p_user": user_id, "p_campaign": campaign_id}).execute()
+            )
+        ).data or {}
+        return CampaignCancelResult(campaign_id=str(result["campaign_id"]))
+
+    async def list_review_reply_jobs(
+        self, user_id: str, status: str, limit: int
+    ) -> ReviewReplyJobList:
+        query = self.db.table("review_reply_jobs").select(
+            "id,location_id,review_name,rating,review_text,draft_text,status,scheduled_for,last_error,credits_charged"
+        ).eq("user_id", user_id)
+        if status != "all":
+            query = query.eq("status", status)
+        rows = (
+            await run_in_threadpool(lambda: query.order("created_at", desc=True).limit(limit).execute())
+        ).data or []
+        return ReviewReplyJobList(jobs=[self._review_reply_job(row) for row in rows])
+
+    async def approve_review_reply_job(
+        self, user_id: str, job_id: str, publish_at: datetime | None
+    ) -> ReviewReplyApprovalResult:
+        rows = (
+            await run_in_threadpool(
+                lambda: self.db.table("review_reply_jobs").select("id,status")
+                .eq("id", job_id).eq("user_id", user_id).limit(1).execute()
+            )
+        ).data or []
+        if not rows:
+            raise ValueError("Review reply job not found")
+        current = rows[0]["status"]
+        if current not in {"draft", "pending_approval", "failed"}:
+            raise ValueError(f"A {current} reply cannot be approved")
+        scheduled_for = _as_utc(publish_at) if publish_at else datetime.now(timezone.utc)
+        saved = (
+            await run_in_threadpool(
+                lambda: self.db.table("review_reply_jobs").update({
+                    "status": "scheduled", "scheduled_for": scheduled_for.isoformat(),
+                    "last_error": None, "updated_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", job_id).eq("user_id", user_id).eq("status", current).execute()
+            )
+        ).data or []
+        if not saved:
+            raise RuntimeError("The reply changed while it was being approved")
+        return ReviewReplyApprovalResult(job_id=job_id, scheduled_for=scheduled_for)
+
+    async def cancel_review_reply_job(
+        self, user_id: str, job_id: str
+    ) -> ReviewReplyCancellationResult:
+        rows = (
+            await run_in_threadpool(
+                lambda: self.db.table("review_reply_jobs").select("id,status")
+                .eq("id", job_id).eq("user_id", user_id).limit(1).execute()
+            )
+        ).data or []
+        if not rows:
+            raise ValueError("Review reply job not found")
+        current = rows[0]["status"]
+        if current not in {"draft", "pending_approval", "scheduled", "failed"}:
+            raise ValueError(f"A {current} reply cannot be cancelled")
+        saved = (
+            await run_in_threadpool(
+                lambda: self.db.table("review_reply_jobs").update({
+                    "status": "cancelled", "updated_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", job_id).eq("user_id", user_id).eq("status", current).execute()
+            )
+        ).data or []
+        if not saved:
+            raise RuntimeError("The reply changed while it was being cancelled")
+        return ReviewReplyCancellationResult(job_id=job_id)
+
+    async def list_media_assets(self, user_id: str, media_kind: str, limit: int) -> MediaAssetList:
+        query = self.db.table("media_assets").select(
+            "id,media_kind,mime_type,public_url,status,created_at"
+        ).eq("user_id", user_id).neq("status", "deleted")
+        if media_kind != "all":
+            query = query.eq("media_kind", media_kind)
+        rows = (
+            await run_in_threadpool(lambda: query.order("created_at", desc=True).limit(limit).execute())
+        ).data or []
+        return MediaAssetList(assets=[MediaAssetSummary(
+            asset_id=str(row["id"]), media_kind=row["media_kind"], mime_type=row["mime_type"],
+            public_url=row.get("public_url"), status=row.get("status") or "uploaded",
+            created_at=_parse_datetime(row.get("created_at")),
+        ) for row in rows])
 
     async def list_reviews(
         self,
@@ -583,6 +1029,32 @@ class GBPReadService:
         )
 
     @staticmethod
+    def _automation_rule(row: dict[str, Any]) -> AutomationRuleSummary:
+        return AutomationRuleSummary(
+            rule_id=str(row["id"]),
+            name=row.get("name") or "Review automation",
+            location_id=row.get("location_id"),
+            enabled=bool(row.get("enabled")),
+            mode=row.get("mode") or "draft",
+            min_rating=int(row.get("min_rating") or 1),
+            max_rating=int(row.get("max_rating") or 5),
+            tone=row.get("tone") or "friendly professional",
+            language=row.get("language") or "auto",
+            delay_minutes=int(row.get("delay_minutes") or 0),
+            daily_limit=int(row.get("daily_limit") or 20),
+        )
+
+    @staticmethod
+    def _review_reply_job(row: dict[str, Any]) -> ReviewReplyJobSummary:
+        return ReviewReplyJobSummary(
+            job_id=str(row["id"]), location_id=row["location_id"],
+            review_id=row["review_name"], rating=int(row["rating"]),
+            review_text=row.get("review_text") or "", draft_text=row["draft_text"],
+            status=row["status"], scheduled_for=_parse_datetime(row.get("scheduled_for")),
+            last_error=row.get("last_error"), credits_charged=float(row.get("credits_charged") or 0),
+        )
+
+    @staticmethod
     def _scheduled_post(row: dict[str, Any]) -> ScheduledPostSummary:
         scheduled_for = _parse_datetime(row.get("publish_at"))
         if scheduled_for is None:
@@ -649,7 +1121,7 @@ def create_gbp_mcp_server(
         description="Manage Google Business Profile reviews, credits, and scheduled content.",
         instructions=SERVER_INSTRUCTIONS,
         website_url="https://gbpautomaster.in",
-        version="1.0.0",
+        version="1.1.0",
         token_verifier=SupabaseTokenVerifier(db),
         auth=AuthSettings(
             issuer_url=issuer_url,
@@ -687,6 +1159,200 @@ def create_gbp_mcp_server(
     )
     async def get_credit_balance() -> CreditBalance:
         return await read_service.get_credit_balance(_subject())
+
+    @server.tool(
+        name="list_business_accounts",
+        title="List Google Business Profile accounts",
+        description="List the authenticated user's Google Business Profile accounts and location counts.",
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+    )
+    async def list_business_accounts() -> BusinessAccountList:
+        return await read_service.list_business_accounts(_subject())
+
+    @server.tool(
+        name="get_account_overview",
+        title="Get GBP Master account overview",
+        description="Return the account plan, shared credits, connected account and location totals, review automation count, and scheduled campaign count.",
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+    )
+    async def get_account_overview() -> AccountOverview:
+        return await read_service.get_account_overview(_subject())
+
+    @server.tool(
+        name="list_review_automation_rules",
+        title="List automatic review reply rules",
+        description="List account-default and location-specific review reply automation rules. This read-only action costs no credits.",
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+    )
+    async def list_review_automation_rules() -> AutomationRuleList:
+        return await read_service.list_automation_rules(_subject())
+
+    @server.tool(
+        name="configure_review_automation_rule",
+        title="Configure an automatic review reply rule",
+        description=(
+            "Create or replace the account-default rule or one location override. Enabling "
+            "auto_publish authorizes future public Google replies, so call only after the user "
+            "confirms the target, rating range, instructions, limits and publishing mode."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    )
+    async def configure_review_automation_rule(
+        name: str = Field(min_length=1, max_length=100),
+        location_id: str | None = None,
+        enabled: bool = False,
+        mode: Literal["draft", "approval", "auto_publish"] = "draft",
+        min_rating: int = Field(default=4, ge=1, le=5),
+        max_rating: int = Field(default=5, ge=1, le=5),
+        tone: str = Field(default="friendly professional", min_length=1, max_length=100),
+        language: str = Field(default="auto", min_length=2, max_length=20),
+        delay_minutes: int = Field(default=0, ge=0, le=10080),
+        daily_limit: int = Field(default=20, ge=1, le=500),
+        custom_instructions: str = Field(default="", max_length=2000),
+        blocked_terms: list[str] = Field(default_factory=list, max_length=100),
+    ) -> AutomationRuleResult:
+        return await read_service.configure_automation_rule(
+            _subject(), name, location_id, enabled, mode, min_rating, max_rating,
+            tone, language, delay_minutes, daily_limit, custom_instructions, blocked_terms,
+        )
+
+    @server.tool(
+        name="list_content_campaigns",
+        title="List content calendar campaigns",
+        description="List account-level campaigns and every targeted GBP location. This read-only action costs no credits.",
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+    )
+    async def list_content_campaigns(
+        status: Literal["all", "draft", "awaiting_approval", "scheduled", "processing", "partially_published", "published", "failed", "cancelled"] = "all",
+        limit: int = Field(default=50, ge=1, le=200),
+    ) -> CampaignList:
+        return await read_service.list_content_campaigns(_subject(), status, limit)
+
+    @server.tool(
+        name="create_content_campaign",
+        title="Create a multi-location content draft",
+        description=(
+            "Create a free draft for one or more owned locations. This does not schedule, "
+            "publish or spend credits. EVENT and OFFER drafts require an event title and times."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False),
+    )
+    async def create_content_campaign(
+        title: str = Field(min_length=1, max_length=160),
+        topic_type: Literal["STANDARD", "EVENT", "OFFER"] = "STANDARD",
+        summary: str = Field(default="", max_length=1500),
+        location_ids: list[str] = Field(min_length=1, max_length=100),
+        timezone_name: str = Field(default="Asia/Kolkata", min_length=1, max_length=100),
+        call_to_action_type: Literal["BOOK", "ORDER", "SHOP", "LEARN_MORE", "SIGN_UP", "CALL"] | None = None,
+        call_to_action_url: HttpUrl | None = None,
+        event_title: str | None = Field(default=None, max_length=200),
+        event_start: datetime | None = None,
+        event_end: datetime | None = None,
+        coupon_code: str | None = Field(default=None, max_length=100),
+        offer_terms: str | None = Field(default=None, max_length=1000),
+        media_asset_id: str | None = Field(default=None, max_length=100),
+    ) -> CampaignDraftResult:
+        if topic_type in ("EVENT", "OFFER") and (not event_title or not event_start or not event_end):
+            raise ValueError("Event and offer campaigns require a title, start and end")
+        if event_start and event_end and _as_utc(event_end) <= _as_utc(event_start):
+            raise ValueError("Event end must be after event start")
+        call_to_action = None
+        if call_to_action_type:
+            call_to_action = {"action_type": call_to_action_type, "url": str(call_to_action_url) if call_to_action_url else None}
+        event_details = None if topic_type == "STANDARD" else {
+            "title": event_title, "start_time": _as_utc(event_start).isoformat(),
+            "end_time": _as_utc(event_end).isoformat(),
+        }
+        offer_details = None if topic_type != "OFFER" else {
+            "coupon_code": coupon_code or "", "terms_conditions": offer_terms or "",
+        }
+        return await read_service.create_content_campaign(
+            _subject(), title, topic_type, summary, timezone_name, location_ids,
+            call_to_action, event_details, offer_details, media_asset_id,
+        )
+
+    @server.tool(
+        name="schedule_content_campaign",
+        title="Schedule a multi-location content campaign",
+        description=(
+            "Schedule an existing approved draft. The charge is 5 credits per target location. "
+            "Call only after showing the complete campaign, every location, exact time and total charge."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True),
+    )
+    async def schedule_content_campaign(
+        campaign_id: str = Field(min_length=36, max_length=36),
+        publish_at: datetime = Field(),
+    ) -> CampaignScheduleResult:
+        return await read_service.schedule_content_campaign(_subject(), campaign_id, publish_at)
+
+    @server.tool(
+        name="cancel_content_campaign",
+        title="Cancel an unpublished content campaign",
+        description="Cancel a draft or scheduled campaign after explicit confirmation. Scheduling credits are not refunded.",
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
+    )
+    async def cancel_content_campaign(
+        campaign_id: str = Field(min_length=36, max_length=36),
+    ) -> CampaignCancelResult:
+        return await read_service.cancel_content_campaign(_subject(), campaign_id)
+
+    @server.tool(
+        name="list_review_reply_jobs",
+        title="List AI review reply jobs",
+        description=(
+            "List generated review reply drafts, approvals, scheduled replies and delivery results. "
+            "This read-only action costs no credits."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+    )
+    async def list_review_reply_jobs(
+        status: Literal["all", "draft", "pending_approval", "scheduled", "publishing", "published", "failed", "cancelled"] = "all",
+        limit: int = Field(default=50, ge=1, le=200),
+    ) -> ReviewReplyJobList:
+        return await read_service.list_review_reply_jobs(_subject(), status, limit)
+
+    @server.tool(
+        name="approve_review_reply_job",
+        title="Approve an AI review reply",
+        description=(
+            "Approve the exact stored reply text for publication now or at a supplied time. "
+            "Publishing costs 2.5 credits. Call only after showing the user the draft, target "
+            "review, publication time and charge."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True),
+    )
+    async def approve_review_reply_job(
+        job_id: str = Field(min_length=36, max_length=36),
+        publish_at: datetime | None = None,
+    ) -> ReviewReplyApprovalResult:
+        return await read_service.approve_review_reply_job(_subject(), job_id, publish_at)
+
+    @server.tool(
+        name="cancel_review_reply_job",
+        title="Cancel an AI review reply",
+        description="Cancel a draft, pending, scheduled or failed review reply. No credits are refunded.",
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
+    )
+    async def cancel_review_reply_job(
+        job_id: str = Field(min_length=36, max_length=36),
+    ) -> ReviewReplyCancellationResult:
+        return await read_service.cancel_review_reply_job(_subject(), job_id)
+
+    @server.tool(
+        name="list_media_assets",
+        title="List uploaded media assets",
+        description=(
+            "List reusable photos and videos already uploaded to the authenticated account's "
+            "media library. Use an asset ID when creating a content campaign."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+    )
+    async def list_media_assets(
+        media_kind: Literal["all", "photo", "video"] = "all",
+        limit: int = Field(default=50, ge=1, le=200),
+    ) -> MediaAssetList:
+        return await read_service.list_media_assets(_subject(), media_kind, limit)
 
     @server.tool(
         name="list_reviews",
