@@ -1,7 +1,7 @@
 import os
 import re
 import razorpay
-from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi import FastAPI, HTTPException, Request, Depends, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, field_validator
@@ -19,7 +19,10 @@ from contextlib import asynccontextmanager
 from starlette.concurrency import run_in_threadpool
 from mcp_server import create_gbp_mcp_server, mcp_transport_security
 from platform_api import router as platform_router
-from rank_service import RANK_REPORT_COST, run_local_rank_scan
+from rank_service import (
+    RANK_REPORT_COST, create_rank_pdf_token, read_rank_pdf_token,
+    render_rank_report_pdf, run_local_rank_scan,
+)
 
 
 @asynccontextmanager
@@ -87,6 +90,23 @@ async def openai_apps_challenge():
     if not token:
         raise HTTPException(404, "Domain verification challenge is not configured")
     return token
+
+
+@app.get("/api/rank/report.pdf")
+async def download_rank_report_pdf(token: str = Query(min_length=40, max_length=12000)):
+    secret = os.getenv("RANK_REPORT_SIGNING_SECRET") or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    try:
+        report = read_rank_pdf_token(token, secret)
+    except TimeoutError as error:
+        raise HTTPException(410, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(403, str(error)) from error
+    filename = re.sub(r"[^A-Za-z0-9_-]+", "-", str(report.get("keyword") or "keyword")).strip("-")[:60]
+    return Response(
+        content=render_rank_report_pdf(report),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="GBP-Rank-{filename or "report"}.pdf"'},
+    )
 
 class RequestModel(BaseModel):
     @field_validator('location_id', check_fields=False)
@@ -1550,7 +1570,12 @@ async def generate_rank_report(req: RankReportRequest):
             raise
         raise HTTPException(502, str(error)) from error
     (await run_in_threadpool(lambda: finish_operation(operation, True)))
+    signing_secret = os.getenv('RANK_REPORT_SIGNING_SECRET') or os.getenv('SUPABASE_SERVICE_ROLE_KEY', '')
+    pdf_token, pdf_expires_at = create_rank_pdf_token(report, signing_secret)
+    api_base = os.getenv('PUBLIC_API_URL', 'https://gbp-auto-master-backend-us.onrender.com').rstrip('/')
     return {'status':'success', **report, 'credits_charged': RANK_REPORT_COST,
+            'pdf_download_url': f'{api_base}/api/rank/report.pdf?token={pdf_token}',
+            'pdf_expires_at': datetime.fromtimestamp(pdf_expires_at, timezone.utc).isoformat(),
             'balance':await get_token_balance(req.location_id,req.user_id)}
 
 

@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 
-from rank_service import run_local_rank_scan
+import time
+
+from rank_service import create_rank_pdf_token, read_rank_pdf_token, render_rank_report_pdf, run_local_rank_scan
 
 
 def response(payload):
@@ -39,3 +41,19 @@ def test_rank_scan_does_not_invent_rank_when_target_is_absent():
     )
     assert report['actual_rank'] is None
     assert report['found_in_top_11'] is False
+
+
+def test_rank_report_pdf_token_round_trip_and_pdf_render():
+    report = {
+        'keyword': 'coffee shop', 'target_business': 'Ayush Cafe',
+        'search_area': 'Pune, MH, IN', 'actual_rank': 2, 'found_in_top_11': True,
+        'results': [{'position': 2, 'business_name': 'Ayush Cafe', 'rating': 4.8,
+                     'reviews': 120, 'address': 'Main Road', 'place_id': 'p1', 'is_target': True}],
+    }
+    token, expires_at = create_rank_pdf_token(report, 'test-secret', 60)
+    assert expires_at > time.time()
+    decoded = read_rank_pdf_token(token, 'test-secret')
+    assert decoded['actual_rank'] == 2
+    pdf = render_rank_report_pdf(decoded)
+    assert pdf.startswith(b'%PDF-1.4')
+    assert b'Ayush Cafe' in pdf

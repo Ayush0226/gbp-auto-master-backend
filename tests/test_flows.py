@@ -140,7 +140,7 @@ def test_all_private_routes_reject_anonymous_requests(monkeypatch):
         path=getattr(route,'path',None)
         if not path:
             continue
-        if not path.startswith('/api/') or path in ('/api/health','/api/payment/key') or path.startswith(('/api/cron/','/api/webhooks/')):
+        if not path.startswith('/api/') or path in ('/api/health','/api/payment/key','/api/rank/report.pdf') or path.startswith(('/api/cron/','/api/webhooks/')):
             continue
         method='POST' if 'POST' in route.methods else 'GET'
         response=client.request(method,path,json={})

@@ -24,6 +24,7 @@ async def authorize(request: Request):
         "/.well-known/oauth-protected-resource",
         "/.well-known/oauth-protected-resource/mcp",
         "/.well-known/openai-apps-challenge",
+        "/api/rank/report.pdf",
     }:
         return
     authorization = request.headers.get("authorization", "")

@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from starlette.concurrency import run_in_threadpool
 
 from mcp_auth import DEFAULT_MCP_RESOURCE_URL, OAUTH_SCOPES
-from rank_service import RANK_REPORT_COST, run_local_rank_scan
+from rank_service import RANK_REPORT_COST, create_rank_pdf_token, run_local_rank_scan
 
 
 SERVER_INSTRUCTIONS = (
@@ -82,6 +82,8 @@ class LocalRankReport(BaseModel):
     results: list[LocalRankResult]
     credits_charged: float = 10.0
     remaining_balance: float
+    pdf_download_url: HttpUrl
+    pdf_expires_at: datetime
 
 
 class CreditBalance(BaseModel):
@@ -516,9 +518,17 @@ class GBPReadService:
             ).execute()
         )
         balance = await self.get_credit_balance(user_id)
+        signing_secret = os.getenv("RANK_REPORT_SIGNING_SECRET") or os.getenv(
+            "SUPABASE_SERVICE_ROLE_KEY", ""
+        )
+        pdf_token, pdf_expires_at = create_rank_pdf_token(scan, signing_secret)
+        resource_url = os.getenv("MCP_RESOURCE_URL", DEFAULT_MCP_RESOURCE_URL).rstrip("/")
+        api_base = resource_url[:-4] if resource_url.endswith("/mcp") else resource_url
         return LocalRankReport(
             request_id=request_id,
             remaining_balance=balance.balance,
+            pdf_download_url=f"{api_base}/api/rank/report.pdf?token={pdf_token}",
+            pdf_expires_at=datetime.fromtimestamp(pdf_expires_at, timezone.utc),
             **scan,
         )
 
@@ -1248,7 +1258,8 @@ def create_gbp_mcp_server(
             "within the first 11 Google local results using SerpApi. This costs exactly "
             "10 GBP Master credits. Before calling, show the keyword, location, and charge "
             "and obtain explicit user confirmation. Supply a new request_id and reuse it "
-            "if retrying the same confirmed scan so the account cannot be charged twice."
+            "if retrying the same confirmed scan so the account cannot be charged twice. "
+            "The result includes a temporary downloadable PDF link at no additional charge."
         ),
         annotations=ToolAnnotations(
             readOnlyHint=False,
