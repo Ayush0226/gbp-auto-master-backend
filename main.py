@@ -1221,7 +1221,9 @@ async def api_refresh_google_token(req: RefreshTokenRequest):
             return {"status": "error", "message": "No refresh token found for this user"}
             
         new_access_token = (await run_in_threadpool(lambda: get_offline_access_token(refresh_token)))
-        return {"status": "success", "provider_token": new_access_token}
+        if not new_access_token:
+            return {"status": "error", "message": "Google authorization was rejected. Reconnect Google Business Profile."}
+        return {"status": "success", "provider_token": new_access_token, "expires_in": 3600}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -1259,10 +1261,10 @@ import json
 
 
 async def _resolve_review_automation_rule(user_id: str, location_id: str) -> dict | None:
-    specific = (await run_in_threadpool(lambda: supabase.table('review_automation_rules').select('*').eq('user_id', user_id).eq('location_id', location_id).eq('enabled', True).execute())).data or []
+    specific = (await run_in_threadpool(lambda: supabase.table('review_automation_rules').select('*').eq('user_id', user_id).eq('location_id', location_id).execute())).data or []
     if specific:
         return specific[0]
-    defaults = (await run_in_threadpool(lambda: supabase.table('review_automation_rules').select('*').eq('user_id', user_id).is_('location_id', 'null').eq('enabled', True).execute())).data or []
+    defaults = (await run_in_threadpool(lambda: supabase.table('review_automation_rules').select('*').eq('user_id', user_id).is_('location_id', 'null').execute())).data or []
     return defaults[0] if defaults else None
 
 
@@ -1298,10 +1300,9 @@ async def google_reviews_webhook(req: Request):
     }).execute())).data
     if not claimed:
         return {'status': 'ignored', 'reason': 'Duplicate notification'}
-    profile = await ensure_location_profile(location, user_id)
-    if profile['plan_type'] == 'free':
-        await _finish_inbound_event(event_id, 'ignored')
-        return {'status': 'ignored', 'reason': 'No active plan'}
+    # Free accounts receive welcome credits too. Publishing is governed by the
+    # normal atomic credit reservation, so plan type must not discard the event.
+    await ensure_location_profile(location, user_id)
     user = (await run_in_threadpool(lambda: supabase.auth.admin.get_user_by_id(user_id))).user
     refresh_token = (user.user_metadata or {}).get('google_refresh_token')
     if not refresh_token:
@@ -1322,6 +1323,9 @@ async def google_reviews_webhook(req: Request):
         return {'status': 'ignored', 'reason': 'Already replied'}
     rule = await _resolve_review_automation_rule(user_id, location)
     if rule:
+        if not rule.get('enabled'):
+            await _finish_inbound_event(event_id, 'ignored')
+            return {'status': 'ignored', 'reason': 'Automation is disabled for this location'}
         rating = {'ONE': 1, 'TWO': 2, 'THREE': 3, 'FOUR': 4, 'FIVE': 5}.get(review.get('starRating'), 5)
         if not (int(rule['min_rating']) <= rating <= int(rule['max_rating'])):
             await _finish_inbound_event(event_id, 'ignored')
@@ -1925,14 +1929,6 @@ async def run_review_job():
     sent = 0
     failed = 0
     for user in users:
-        v2_rules = (await run_in_threadpool(
-            lambda user=user: supabase.table('review_automation_rules').select('id')
-            .eq('user_id', user.id).limit(1).execute()
-        )).data or []
-        if v2_rules:
-            # Webhook-created review_reply_jobs own this account's automation.
-            # Running the legacy scanner as well could publish a second reply.
-            continue
         subscriptions = await location_subscriptions(user.id)
         refresh = (user.user_metadata or {}).get('google_refresh_token')
         if not subscriptions or not refresh:
@@ -1943,6 +1939,11 @@ async def run_review_job():
             failed += 1
             continue
         for location in subscriptions:
+            # V2 webhook automation owns only the locations covered by a rule.
+            # Do not let one configured location disable legacy replies for all
+            # other locations on the same Google account.
+            if await _resolve_review_automation_rule(user.id, location):
+                continue
             try:
                 result = await sync_and_reply_reviews(GoogleReviewRequest(user_id=user.id, location_id=location, provider_token=token))
                 sent += sum(1 for reply in result.get('replied',[]) if reply['status']=='published')

@@ -53,6 +53,22 @@ def test_successful_reply_finalizes_charge():
     main.finish_operation.assert_called_once_with('reply:accounts/1/locations/123/reviews/abc',True)
 
 
+def test_legacy_review_scan_skips_only_locations_with_v2_rules(monkeypatch):
+    user = SimpleNamespace(id='owner', user_metadata={'google_refresh_token': 'refresh'})
+    monkeypatch.setattr(main, 'list_all_users', MagicMock(return_value=[user]))
+    monkeypatch.setattr(main, 'location_subscriptions', AsyncMock(return_value=['locations/1', 'locations/2']))
+    monkeypatch.setattr(main, 'get_offline_access_token', MagicMock(return_value='google-token'))
+    monkeypatch.setattr(main, '_resolve_review_automation_rule', AsyncMock(side_effect=[{'id': 'rule-1'}, None]))
+    scan = AsyncMock(return_value={'replied': [{'status': 'published'}], 'failures': []})
+    monkeypatch.setattr(main, 'sync_and_reply_reviews', scan)
+
+    result = asyncio.run(main.run_review_job())
+
+    assert result['status'] == 'success'
+    assert scan.await_count == 1
+    assert scan.await_args.args[0].location_id == 'locations/2'
+
+
 def test_duplicate_reply_does_not_generate_or_publish():
     main.reserve_operation.side_effect=HTTPException(409,'Already reserved')
     with pytest.raises(HTTPException): run_reply()
