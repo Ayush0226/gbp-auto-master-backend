@@ -84,7 +84,7 @@ Schedules run in UTC; the table above explains the user-facing time. Publishing 
 - Old SDK/HTTP connection reuse caused dashboard requests to fail with RemoteProtocolError in Render logs. The Supabase upgrade uses bounded HTTP/1 connections without idle keep-alive reuse; automatic PostgREST write retries are disabled to avoid repeating side effects.
 - Supabase admin user-list responses omit identities. The Google migration now fetches each full Auth record before checking immutable identity ownership. All three grants migrated successfully without reconnection.
 - Sign-up and the public brochure still advertised paid actions/old renewal prices. Their copy now matches launch-code access and paused checkout. Brochure header and grid minimum widths also caused mobile overflow; layouts were corrected and checked at 320, 390, 768 and 1440 pixels.
-- An old static panorama poster shadowed the /brochure application route in production. It was preserved as brochure-panorama.html; /brochure now serves the app, and the old brochure.html URL redirects to it.
+- An old static panorama poster shadowed the /brochure application route in production. It was preserved as brochure-panorama.html; /brochure now serves the app. A legacy brochure.html app-route alias preserves old links, with a redirect also declared for Vercel deployments.
 
 ## Dependency and database security results
 
