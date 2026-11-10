@@ -1,4 +1,6 @@
 -c requirements-lock.txt
+pip==26.3
+setuptools==84.2.1
 fastapi==0.142.2
 uvicorn==0.54.0
 supabase==2.34.1
