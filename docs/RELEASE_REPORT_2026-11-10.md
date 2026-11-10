@@ -76,7 +76,7 @@ Schedules run in UTC; the table above explains the user-facing time. Publishing 
 | S26: UI-local backend secrets | Unnecessary backend secrets removed from the UI local environment; encrypted original retained outside Git. |
 | S27: large public 3D bundle | Still approximately 887 kB minified in a lazy-loaded chunk. Slow-device performance work remains. |
 | S28: lint warnings | Build/type checks pass; lint has no errors but still reports React hook/state/purity and unused-catch warnings. They are not all resolved. |
-| S29: stale installed MCP skill | Updated version 0.4.0 source package is committed with no credit instructions. Installed clients/cached 0.3.0 still need a supported plugin refresh/reinstall. |
+| S29: stale installed MCP skill | Updated version 0.4.0 source package is committed with no credit instructions. The local Personal marketplace source was backed up and updated; the standard installer confirms 0.4.0 installed and enabled. Restart Codex/start a fresh chat to load it. Other clients need their own update. |
 | S30: incomplete handwritten tool list | Full 20-tool contract generated from runtime schemas and committed. |
 
 ## Dependency and database security results
@@ -116,6 +116,7 @@ An optional Pollinations account-connect integration is also implemented using O
 - UI build/type checks pass. Responsive browser checks cover Plans & access at six widths and the image-preview-to-schedule journey on desktop/mobile with provider fixtures. They do not establish real provider-account consent or real public Google delivery.
 - Live backend health/readiness, website delivery, protected MCP challenge, OAuth discovery, Google refresh/accounts reads, database REST access, Groq authentication and SerpApi account reads succeed. No paid rank scan was consumed; the observed provider balance is 250 searches.
 - End-to-end MCP consent, expiry/refresh and revocation still need a designated test login/client. Existing customer grants have not been revoked as a test.
+- Local GBP Master plugin 0.4.0 is installed and enabled through the supported installer. Restart the app/start a fresh chat before checking its new instructions and consent flow. [Official plugin update guidance](https://developers.openai.com/plugins/build/plugins).
 - Genuine Pub/Sub push delivery/IAM requires the relevant Google Cloud subscription/log access. Connected Render/Supabase administration does not confer Google Cloud administration.
 - A complete real public-write journey and crash/restart rehearsal need an isolated test business/environment. The user has been asked to identify a test profile; no customer business was chosen automatically.
 - Actual image generation awaits the selected Cloudflare account setup.
