@@ -79,6 +79,12 @@ Schedules run in UTC; the table above explains the user-facing time. Publishing 
 | S29: stale installed MCP skill | Updated version 0.4.0 source package is committed with no credit instructions. The local Personal marketplace source was backed up and updated; the standard installer confirms 0.4.0 installed and enabled. Restart Codex/start a fresh chat to load it. Other clients need their own update. |
 | S30: incomplete handwritten tool list | Full 20-tool contract generated from runtime schemas and committed. |
 
+## Additional issues found during release
+
+- Old SDK/HTTP connection reuse caused dashboard requests to fail with RemoteProtocolError in Render logs. The Supabase upgrade uses bounded HTTP/1 connections without idle keep-alive reuse; automatic PostgREST write retries are disabled to avoid repeating side effects.
+- Supabase admin user-list responses omit identities. The Google migration now fetches each full Auth record before checking immutable identity ownership. All three grants migrated successfully without reconnection.
+- Sign-up and the public brochure still advertised paid actions/old renewal prices. Their copy now matches launch-code access and paused checkout. Brochure header and grid minimum widths also caused mobile overflow; layouts were corrected and checked at 320, 390, 768 and 1440 pixels.
+
 ## Dependency and database security results
 
 The seven affected backend package families were updated, runtime dependencies constrained, Python 3.11.18 selected for Render, and Supabase upgraded to 2.34.1. The fresh local scan of 91 installed packages found no matching OSV advisories. The UI audit found zero known vulnerabilities. These are advisory checks, not proof that no security defect exists.
