@@ -95,8 +95,7 @@ begin
 end $$;
 
 -- Expiry remains meaningful even though monthly credit refills are retired.
-update account_subscriptions set monthly_credit_allowance=0,next_credit_grant_at=null,
-  status=case when expires_at<=now() and status='active' then 'expired' else status end;
+update account_subscriptions set monthly_credit_allowance=0,next_credit_grant_at=null;
 update location_profiles set monthly_token_allowance=0,next_token_grant_at=null;
 
 create or replace function public.settle_order(p_order text,p_payment text,p_user uuid)
