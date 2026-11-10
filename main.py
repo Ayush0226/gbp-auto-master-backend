@@ -308,6 +308,8 @@ async def get_all_users(req: AdminAuthRequest):
         
     try:
         users = (await run_in_threadpool(lambda: list_all_users()))
+        protected_google = (await run_in_threadpool(lambda: supabase.table('provider_credentials').select('user_id').eq('provider','google').execute())).data or []
+        connected_ids = {row['user_id'] for row in protected_google}
         user_list = []
         for u in users:
             meta = u.user_metadata or {}
@@ -318,7 +320,7 @@ async def get_all_users(req: AdminAuthRequest):
                 "full_name": meta.get("full_name"),
                 "demo_used": meta.get("demo_used", False),
                 "subscriptions": await location_subscriptions(u.id),
-                "has_google_token": bool(meta.get("google_refresh_token")),
+                "has_google_token": u.id in connected_ids or bool(meta.get("google_refresh_token")),
                 "user_metadata": {k: meta[k] for k in ("ai_settings", "competitor_intel", "cached_locations") if k in meta}
             })
         return {"status": "success", "users": user_list}

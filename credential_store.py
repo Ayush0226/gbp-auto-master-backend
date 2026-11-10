@@ -38,6 +38,12 @@ def read_credential(db, user_id, provider):
 
 def protect_google_grant(db, user, refresh_token):
     """Validate against immutable Auth identities before adopting a grant."""
+    # Admin list_users omits identities. Fetch the complete immutable record
+    # before validating ownership during worker startup or grant migration.
+    if not getattr(user, 'identities', None):
+        user = db.auth.admin.get_user_by_id(user.id).user
+        if not user:
+            raise PermissionError('Could not verify the existing account identity')
     response = requests.post('https://oauth2.googleapis.com/token', data={
         'client_id': os.getenv('GOOGLE_CLIENT_ID'), 'client_secret': os.getenv('GOOGLE_CLIENT_SECRET'),
         'refresh_token': refresh_token, 'grant_type': 'refresh_token',

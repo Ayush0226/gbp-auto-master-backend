@@ -142,6 +142,19 @@ def test_credentials_are_encrypted_and_user_scoped(monkeypatch):
     assert payload['user_id']=='owner'
 
 
+def test_abbreviated_admin_user_loads_immutable_identities(monkeypatch):
+    db=MagicMock(); http=MagicMock()
+    full=SimpleNamespace(id='owner',identities=[SimpleNamespace(provider='google',identity_data={'sub':'owner-sub'})])
+    db.auth.admin.get_user_by_id.return_value=SimpleNamespace(user=full)
+    http.post.return_value=SimpleNamespace(ok=True,json=lambda:{'access_token':'access'})
+    http.get.return_value=SimpleNamespace(ok=True,json=lambda:{'sub':'owner-sub'})
+    monkeypatch.setattr(credential_store,'requests',http)
+    save=MagicMock(); monkeypatch.setattr(credential_store,'save_credential',save)
+    assert credential_store.protect_google_grant(db,SimpleNamespace(id='owner',identities=[]),'refresh')=='refresh'
+    db.auth.admin.get_user_by_id.assert_called_once_with('owner')
+    save.assert_called_once_with(db,'owner','google','refresh',subject='owner-sub')
+
+
 def test_valid_photo_is_transcoded_and_metadata_removed():
     data=io.BytesIO(); Image.new('RGB',(400,300),'green').save(data,'PNG')
     raw,w,h=normalize_photo(data.getvalue())
