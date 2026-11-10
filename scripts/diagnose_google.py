@@ -5,6 +5,7 @@ from pathlib import Path
 from collections import Counter
 
 import requests
+from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 
 root = Path(__file__).resolve().parents[1]
@@ -17,10 +18,18 @@ response = requests.get(db + '/auth/v1/admin/users', headers=headers, params={'p
 result['auth_admin_status'] = response.status_code
 users = response.json().get('users', []) if response.ok else []
 result['users_first_page'] = len(users)
+protected_response = requests.get(db+'/rest/v1/provider_credentials', headers=headers,
+    params={'select':'user_id,ciphertext','provider':'eq.google'}, timeout=30)
+protected_response.raise_for_status()
+protected = {row['user_id']: row['ciphertext'] for row in protected_response.json()}
+result['protected_google_grants'] = len(protected)
 grants = []
 for index, user in enumerate(users, 1):
     grant = {'account': index}
     refresh = (user.get('user_metadata') or {}).get('google_refresh_token')
+    grant['legacy_metadata_grant'] = bool(refresh)
+    if user['id'] in protected:
+        refresh = Fernet(os.environ['CREDENTIAL_ENCRYPTION_KEY'].encode()).decrypt(protected[user['id']].encode()).decode()
     grant['has_google_refresh_token'] = bool(refresh)
     if refresh:
         token_response = requests.post('https://oauth2.googleapis.com/token', data={

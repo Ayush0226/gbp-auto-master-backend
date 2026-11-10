@@ -1,5 +1,7 @@
 # Deploy the removal of usage credits
 
+> Historical cutover instructions. The matching backend, website and migrations are now deployed. Follow [the 10 November release report](RELEASE_REPORT_2026-11-10.md) for current status. Do not re-enable payment checkout or rerun the original identity/role migration as part of follow-up work. The live Render platform health path still needs activation; a value in render.yaml alone does not apply it to an unmanaged service.
+
 > Updated 9 November: payment checkout is now paused and lifetime access codes replace plan checkout. Apply migration 005 after 004 and follow `LIFETIME_ACCESS_2026-11-09.md` for the current rollout. Payment-checkout steps below describe the previous cutover plan.
 
 Prepared 8 November 2026. These changes are local and have not been deployed.

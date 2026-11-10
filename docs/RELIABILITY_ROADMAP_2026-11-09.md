@@ -1,5 +1,7 @@
 # Work remaining for a dependable release
 
+> Historical plan. For deployed fixes, recovered cron schedules, preserved user access and the current remaining gates, read [the 10 November release report](RELEASE_REPORT_2026-11-10.md).
+
 Based on the 8 November diagnostic, updated for the 9 November payment/lifetime changes. This is the remaining work plan; it does not claim that the live failures have been repaired. The earlier diagnostic's production observations are dated 8 November and must be rechecked during recovery.
 
 ## Already implemented locally

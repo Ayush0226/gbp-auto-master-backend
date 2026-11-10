@@ -216,4 +216,5 @@ equal(resultReplay.replayed,true,'completed rank result can be reused');equal(re
 equal((await scalar('select claim_result_operation($1,$2,$3,$4)',['result-1','locations/1',owner,'different'])).success,false,'same ID cannot scan different content');
 console.log(`${assertions} database assertions passed against PostgreSQL (PGlite).`);
 await db.exec(await readFile(new URL('../../migrations/20261110061404_performance_indexes.sql', import.meta.url), 'utf8'));
+await db.exec(await readFile(new URL('../../migrations/20261110100038_connection_followup_indexes.sql', import.meta.url), 'utf8'));
 await db.close();
