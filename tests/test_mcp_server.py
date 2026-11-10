@@ -93,28 +93,6 @@ def test_list_locations_is_owner_scoped_and_uses_cached_names():
     assert db.table.return_value.select.return_value.eq.call_count == 2
 
 
-def test_credit_balance_refreshes_locations_and_returns_action_costs():
-    db = MagicMock()
-    db.table.return_value.select.return_value.eq.return_value.execute.return_value = result(
-        [{"location_id": "locations/123"}]
-    )
-    db.rpc.return_value.execute.side_effect = [result(None), result({"tokens_balance": 200})]
-
-    response = asyncio.run(GBPReadService(db).get_credit_balance("account-123"))
-
-    assert response.balance == 200
-    assert response.action_costs.publish_review_reply == 2.5
-    assert response.action_costs.schedule_post == 5
-    assert db.rpc.call_args_list[0].args == (
-        "refresh_monthly_tokens",
-        {"p_location": "locations/123", "p_user": "account-123"},
-    )
-    assert db.rpc.call_args_list[1].args == (
-        "ensure_account",
-        {"p_user": "account-123"},
-    )
-
-
 def test_all_contract_tools_are_registered(monkeypatch):
     monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
     monkeypatch.setenv("MCP_RESOURCE_URL", "https://api.example.com/mcp")
@@ -125,7 +103,6 @@ def test_all_contract_tools_are_registered(monkeypatch):
 
     assert set(by_name) == {
         "list_locations",
-        "get_credit_balance",
         "list_business_accounts",
         "get_account_overview",
         "list_review_automation_rules",
@@ -147,7 +124,7 @@ def test_all_contract_tools_are_registered(monkeypatch):
         "generate_local_rank_report",
     }
     assert by_name["list_locations"].annotations.read_only_hint is True
-    assert by_name["get_credit_balance"].annotations.read_only_hint is True
+    assert "get_credit_balance" not in by_name
     assert by_name["list_reviews"].annotations.read_only_hint is True
     assert by_name["draft_review_reply"].annotations.read_only_hint is True
     assert by_name["list_business_accounts"].annotations.read_only_hint is True
@@ -287,7 +264,7 @@ def test_list_reviews_filters_unanswered(monkeypatch):
     assert response.total_review_count == 2
 
 
-def test_publish_reply_reserves_and_finishes_credit_charge(monkeypatch):
+def test_publish_reply_claims_and_finishes_without_charging(monkeypatch):
     db = MagicMock()
     db.rpc.return_value.execute.return_value = result(
         {"success": True, "balance": 197.5}
@@ -315,10 +292,10 @@ def test_publish_reply_reserves_and_finishes_credit_charge(monkeypatch):
     )
 
     assert response.status == "published"
-    assert response.remaining_balance == 197.5
-    assert db.rpc.call_args_list[0].args[0] == "reserve_tokens"
+    assert "remaining_balance" not in response.model_dump()
+    assert db.rpc.call_args_list[0].args[0] == "claim_operation"
     assert db.rpc.call_args_list[1].args == (
-        "finish_tokens",
+        "finish_operation",
         {
             "p_operation": "reply:accounts/10/locations/123/reviews/a",
             "p_success": True,
@@ -352,6 +329,6 @@ def test_schedule_post_uses_exact_utc_timestamp():
     )
 
     assert response.post_id == "post-1"
-    assert response.remaining_balance == 195
+    assert "remaining_balance" not in response.model_dump()
     assert db.rpc.call_args.args[0] == "schedule_post_at"
     assert db.rpc.call_args.args[1]["p_publish_at"] == "2030-01-02T10:00:00+00:00"

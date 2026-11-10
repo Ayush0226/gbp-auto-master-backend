@@ -1,3 +1,5 @@
+> **Retired billing design:** Usage credits were removed on 8 November 2026. Apply migration 004 and follow `docs/DEPLOY_CREDIT_RETIREMENT.md`. Credit prices, grants and wallet instructions below describe the previous version.
+
 # GBP Auto Master product scope
 
 GBP Auto Master uses one account, subscription and credit wallet to manage every Google Business Profile account and location the user connects. The website and MCP plugin call the same authenticated service layer, so an action has the same validation, cost and result in either interface.

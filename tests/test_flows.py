@@ -8,7 +8,6 @@ from fastapi import HTTPException
 import main
 
 ORIGINAL_ACCOUNT = main.ensure_user_profile
-ORIGINAL_BALANCE = main.get_token_balance
 ORIGINAL_LOCATION = main.ensure_location_profile
 
 
@@ -16,12 +15,13 @@ ORIGINAL_LOCATION = main.ensure_location_profile
 def no_live_services(monkeypatch):
     # Every external dependency is replaced; tests must never contact production.
     monkeypatch.setattr(main,'supabase',MagicMock())
+    main.supabase.rpc.return_value.execute.return_value.data={'success':True}
     monkeypatch.setattr(main,'requests',MagicMock())
     monkeypatch.setattr(main,'generate_ai_reply',MagicMock(return_value='Thank you!'))
     monkeypatch.setattr(main,'reserve_operation',MagicMock(return_value={'success':True}))
     monkeypatch.setattr(main,'finish_operation',MagicMock())
     monkeypatch.setattr(main,'ensure_location_profile',AsyncMock(return_value={'account_id':'accounts/1','plan_type':'yearly'}))
-    monkeypatch.setattr(main,'get_token_balance',AsyncMock(return_value=100))
+    monkeypatch.setattr(main,'google_refresh_grant',MagicMock(return_value='refresh'))
 
 
 def run_reply():
@@ -76,13 +76,6 @@ def test_duplicate_reply_does_not_generate_or_publish():
     main.requests.put.assert_not_called()
 
 
-def test_promo_models_are_distinct():
-    req=main.PromoCodeRequest(user_id='owner',location_id='123',promo_code='CODE')
-    assert req.location_id=='locations/123'
-    assert req.promo_code=='CODE'
-    assert main.ValidatePromoRequest(user_id='owner',code='CODE').code=='CODE'
-
-
 def test_empty_competitor_results_refund(monkeypatch):
     monkeypatch.setattr(main, 'get_offline_access_token', MagicMock(return_value='token'))
     monkeypatch.setattr(main, 'run_local_rank_scan', MagicMock(side_effect=RuntimeError('No local results')))
@@ -91,7 +84,8 @@ def test_empty_competitor_results_refund(monkeypatch):
     )
     req=main.RankReportRequest(user_id='owner',location_id='123',keyword='plumber',request_id='scan-12345678')
     with pytest.raises(HTTPException): asyncio.run(main.generate_rank_report(req))
-    assert main.finish_operation.call_args.args[1] is False
+    assert main.supabase.rpc.call_args.args[0]=='finish_operation'
+    assert main.supabase.rpc.call_args.args[1]['p_success'] is False
 
 
 def test_batch_size_is_bounded():
@@ -102,23 +96,12 @@ def test_batch_size_is_bounded():
 
 def test_account_rpc_result_is_awaited_before_reading_data():
     main.supabase.rpc.return_value.execute.return_value.data={'tokens_balance':200,'id':'owner'}
-    assert asyncio.run(ORIGINAL_ACCOUNT('owner'))['tokens_balance']==200
-
-
-def test_profiles_share_the_same_account_balance(monkeypatch):
-    monkeypatch.setattr(main,'ensure_user_profile',AsyncMock(return_value={'tokens_balance':73}))
-    assert asyncio.run(ORIGINAL_BALANCE('locations/1','owner'))==73
-    assert asyncio.run(ORIGINAL_BALANCE('locations/2','owner'))==73
+    assert asyncio.run(ORIGINAL_ACCOUNT('owner')) == {'id':'owner'}
 
 
 def test_location_lookup_awaits_database_result():
     main.supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data=[{'plan_type':'free'}]
     assert asyncio.run(ORIGINAL_LOCATION('123','owner'))['plan_type']=='free'
-
-
-def test_topup_and_balance_do_not_require_a_business_profile():
-    assert main.TopUpRequest(user_id='owner').location_id is None
-    assert main.TokenBalanceRequest(user_id='owner').location_id is None
 
 
 def test_campaign_payload_maps_offer_fields_for_google():
@@ -156,7 +139,7 @@ def test_all_private_routes_reject_anonymous_requests(monkeypatch):
         path=getattr(route,'path',None)
         if not path:
             continue
-        if not path.startswith('/api/') or path in ('/api/health','/api/payment/key','/api/rank/report.pdf') or path.startswith(('/api/cron/','/api/webhooks/')):
+        if not path.startswith('/api/') or path in ('/api/health','/api/ready','/api/payment/key','/api/rank/report.pdf') or path.startswith(('/api/cron/','/api/webhooks/')):
             continue
         method='POST' if 'POST' in route.methods else 'GET'
         response=client.request(method,path,json={})
@@ -183,4 +166,4 @@ def test_authenticated_profile_route_reads_account(monkeypatch):
     main.supabase.rpc.return_value.execute.return_value.data={'id':'owner','tokens_balance':200}
     response=TestClient(main.app).post('/api/user/profile',headers={'Authorization':'Bearer test-session'},json={'user_id':'owner'})
     assert response.status_code==200
-    assert response.json()['tokens_balance']==200
+    assert response.json() == {'id':'owner'}

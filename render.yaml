@@ -4,12 +4,8 @@ services:
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /api/health
+    healthCheckPath: /api/ready
     envVars:
-      - key: RAZORPAY_KEY_ID
-        sync: false
-      - key: RAZORPAY_KEY_SECRET
-        sync: false
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
@@ -20,6 +16,18 @@ services:
         sync: false
       - key: GROQ_API_KEY
         sync: false
+      - key: CRON_SECRET
+        sync: false
+      - key: SERPAPI_KEY
+        sync: false
+      - key: ALLOWED_ORIGINS
+        value: https://www.gbpautomaster.in,https://gbpautomaster.in
+      - key: BUSINESS_TIMEZONE
+        value: Asia/Kolkata
+      - key: MCP_RESOURCE_URL
+        value: https://gbp-auto-master-backend-us.onrender.com/mcp
+      - key: PUBLIC_API_URL
+        value: https://gbp-auto-master-backend-us.onrender.com
       - key: GOOGLE_MAPS_API_KEY
         sync: false
       - key: GOOGLE_PUBSUB_TOPIC
@@ -28,13 +36,5 @@ services:
         sync: false
       - key: GOOGLE_PUBSUB_SERVICE_ACCOUNT
         sync: false
-      - key: CRON_SECRET
-        sync: false
-      - key: ALLOWED_ORIGINS
-        value: https://www.gbpautomaster.in,https://gbpautomaster.in
-      - key: BUSINESS_TIMEZONE
-        value: Asia/Kolkata
-      - key: MCP_RESOURCE_URL
-        value: https://gbp-auto-master-backend-us.onrender.com/mcp
       - key: MCP_DOCUMENTATION_URL
         value: https://gbpautomaster.in/privacy

@@ -4,12 +4,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, Field, HttpUrl, model_validator
+from pydantic import BaseModel, Field, HttpUrl, model_validator, field_validator
 from starlette.concurrency import run_in_threadpool
 
 from security import normalize_location
+from entitlements import resolve_subscription
 
 
 router = APIRouter(prefix="/api/platform", tags=["platform-v2"])
@@ -24,6 +26,11 @@ def _user_id(request: Request) -> str:
 
 async def _execute(call):
     return await run_in_threadpool(call)
+
+
+def _active_fields(row):
+    retired = {'tokens_balance', 'credits_charged', 'monthly_credit_allowance', 'next_credit_grant_at'}
+    return {key: value for key, value in row.items() if key not in retired}
 
 
 async def _owned_locations(db, user_id: str, location_ids: list[str]) -> list[str]:
@@ -43,7 +50,18 @@ async def _owned_locations(db, user_id: str, location_ids: list[str]) -> list[st
     return normalized
 
 
-class PreferencesUpdate(BaseModel):
+class TimezoneInput(BaseModel):
+    @field_validator('timezone', check_fields=False)
+    @classmethod
+    def valid_timezone(cls, value):
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError('Choose a valid IANA timezone') from None
+        return value
+
+
+class PreferencesUpdate(TimezoneInput):
     timezone: str = Field(default="Asia/Kolkata", min_length=1, max_length=100)
     locale: str = Field(default="en-IN", min_length=2, max_length=20)
     default_account_id: str | None = Field(default=None, max_length=200)
@@ -74,7 +92,7 @@ class AutomationRuleInput(BaseModel):
         return self
 
 
-class CampaignInput(BaseModel):
+class CampaignInput(TimezoneInput):
     title: str = Field(min_length=1, max_length=160)
     topic_type: Literal["STANDARD", "EVENT", "OFFER"] = "STANDARD"
     summary: str = Field(default="", max_length=1500)
@@ -146,8 +164,8 @@ async def account_overview(request: Request):
     )
     subscription = subscriptions[0] if subscriptions else None
     return {
-        "subscription": subscription or {"plan_type": "free", "status": "active"},
-        "credits": float((account or {}).get("tokens_balance") or 0),
+        "subscription": _active_fields(resolve_subscription(subscription)),
+        "checkout_enabled": False,
         "google_accounts": accounts,
         "location_count": len(locations),
         "automation": {
@@ -293,7 +311,7 @@ async def list_review_jobs(
     if status:
         query = query.eq("status", status)
     result = await _execute(lambda: query.order("created_at", desc=True).limit(limit).execute())
-    return {"jobs": result.data or []}
+    return {"jobs": [_active_fields(row) for row in result.data or []]}
 
 
 @router.post("/review-jobs/{job_id}/approve")
@@ -311,7 +329,7 @@ async def approve_review_job(job_id: UUID, payload: ReviewJobApprovalInput, requ
     publish_at = (payload.publish_at or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
     saved = await _execute(
         lambda: db.table("review_reply_jobs").update({
-            "status": "scheduled", "scheduled_for": publish_at, "last_error": None,
+            "status": "scheduled", "scheduled_for": publish_at, "last_error": None, "approval_source": "user",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", str(job_id)).eq("user_id", user_id).eq("status", job["status"]).execute()
     )
@@ -320,9 +338,9 @@ async def approve_review_job(job_id: UUID, payload: ReviewJobApprovalInput, requ
     await _execute(lambda: db.table("audit_events").insert({
         "user_id": user_id, "location_id": job["location_id"], "actor_type": "user",
         "action": "approve_reply", "resource_type": "review_reply_job", "resource_id": str(job_id),
-        "detail": {"scheduled_for": publish_at, "credits_due": 2.5},
+        "detail": {"scheduled_for": publish_at},
     }).execute())
-    return {"status": "scheduled", "job": saved.data[0], "credits_due": 2.5}
+    return {"status": "scheduled", "job": _active_fields(saved.data[0])}
 
 
 @router.post("/review-jobs/{job_id}/cancel")
@@ -348,7 +366,7 @@ async def cancel_review_job(job_id: UUID, request: Request):
         "user_id": user_id, "location_id": job["location_id"], "actor_type": "user",
         "action": "cancel_reply", "resource_type": "review_reply_job", "resource_id": str(job_id),
     }).execute())
-    return {"status": "cancelled", "job_id": str(job_id), "credits_refunded": 0}
+    return {"status": "cancelled", "job_id": str(job_id)}
 
 
 @router.get("/media")
@@ -363,7 +381,19 @@ async def register_media(payload: MediaAssetInput, request: Request):
     db, user_id = request.app.state.db, _user_id(request)
     if not payload.object_path.startswith(f"{user_id}/"):
         raise HTTPException(403, "Media must be uploaded inside the signed-in user's folder")
-    row = {"user_id": user_id, **payload.model_dump(mode="json"), "status": "uploaded"}
+    if '..' in payload.object_path.split('/') or payload.media_kind != 'photo':
+        raise HTTPException(422, 'Choose a photo from your own media folder; video publishing is unavailable')
+    from image_api import normalize_photo
+    raw = await _execute(lambda: db.storage.from_('calendar_images').download(payload.object_path))
+    photo, width, height = await run_in_threadpool(normalize_photo, raw)
+    # Resolve the URL from the owned bucket. Never trust a supplied remote URL.
+    from uuid import uuid4
+    object_path = f'{user_id}/validated/{uuid4()}.jpg'
+    await _execute(lambda: db.storage.from_('calendar_images').upload(object_path,photo,{'content-type':'image/jpeg'}))
+    public_url = db.storage.from_('calendar_images').get_public_url(object_path)
+    row = {"user_id": user_id, **payload.model_dump(mode="json"), "public_url":public_url,
+        "object_path":object_path,"mime_type":"image/jpeg",
+        "width":width,"height":height,"byte_size":len(photo),"status":"validated"}
     saved = await _execute(lambda: db.table("media_assets").upsert(row, on_conflict="user_id,storage_bucket,object_path").execute())
     return {"status": "success", "asset": saved.data[0]}
 
@@ -373,3 +403,12 @@ async def list_audit_events(request: Request, limit: int = Query(default=100, ge
     db, user_id = request.app.state.db, _user_id(request)
     result = await _execute(lambda: db.table("audit_events").select("*").eq("user_id", user_id).order("created_at", desc=True).limit(limit).execute())
     return {"events": result.data or []}
+
+
+@router.get('/legacy-posts/attention')
+async def legacy_posts_attention(request: Request):
+    db, user_id = request.app.state.db, _user_id(request)
+    result = await _execute(lambda: db.table('calendar_posts').select('id,location_id,caption,publish_at,status')
+        .eq('user_id',user_id).in_('status',['failed','publishing','needs_review'])
+        .order('publish_at').limit(100).execute())
+    return {'posts':result.data or []}

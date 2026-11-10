@@ -13,7 +13,6 @@ from typing import Any, Callable
 from http_client import requests
 
 
-RANK_REPORT_COST = 10.0
 RANK_PDF_TTL_SECONDS = 3600
 
 

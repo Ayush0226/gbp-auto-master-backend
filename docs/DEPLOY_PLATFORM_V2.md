@@ -1,3 +1,5 @@
+> **Retired billing design:** Usage credits were removed on 8 November 2026. Apply migration 004 and follow `docs/DEPLOY_CREDIT_RETIREMENT.md`. Credit prices, grants and wallet instructions below describe the previous version.
+
 # Platform v2 deployment checklist
 
 Deploy in this order. The backend intentionally refuses to start if migration 003 is missing.

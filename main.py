@@ -1,18 +1,24 @@
 import os
 import re
-import razorpay
 from fastapi import FastAPI, HTTPException, Request, Depends, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, field_validator
 from supabase import create_client, Client
+from supabase.lib.client_options import SyncClientOptions
+import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
 load_dotenv(".env.local", override=False)
 
 from security import authorize, normalize_location, track_job
+from credential_store import google_refresh_grant
+from connection_api import router as connection_router
+from image_api import router as image_router
+from ops_api import router as ops_router
 import billing
+from entitlements import resolve_subscription
 from mcp_auth import protected_resource_metadata
 from uuid import uuid4
 from contextlib import asynccontextmanager
@@ -20,23 +26,22 @@ from starlette.concurrency import run_in_threadpool
 from mcp_server import create_gbp_mcp_server, mcp_transport_security
 from platform_api import router as platform_router
 from rank_service import (
-    RANK_REPORT_COST, create_rank_pdf_token, read_rank_pdf_token,
+    create_rank_pdf_token, read_rank_pdf_token,
     render_rank_report_pdf, run_local_rank_scan,
 )
 
 
 @asynccontextmanager
 async def lifespan(application):
-    required = ('SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'RAZORPAY_KEY_ID',
-                'RAZORPAY_KEY_SECRET', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GROQ_API_KEY',
-                'SERPAPI_KEY')
+    required = ('SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY',
+                'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GROQ_API_KEY')
     missing = [name for name in required if not os.getenv(name)]
     if missing:
         raise RuntimeError('Missing environment variables: ' + ', '.join(missing))
     try:
-        (await run_in_threadpool(lambda: application.state.db.table('account_token_ledger').select('id').limit(0).execute()))
+        (await run_in_threadpool(lambda: application.state.db.table('operation_runs').select('operation_id').limit(0).execute()))
     except Exception:
-        raise RuntimeError('Database migration 001 must be applied before starting this backend') from None
+        raise RuntimeError('Database migration 004 must be applied before starting this backend') from None
     try:
         (await run_in_threadpool(lambda: application.state.db.table('calendar_posts').select('publish_at').limit(0).execute()))
     except Exception:
@@ -45,6 +50,17 @@ async def lifespan(application):
         (await run_in_threadpool(lambda: application.state.db.table('review_reply_jobs').select('id').limit(0).execute()))
     except Exception:
         raise RuntimeError('Database migration 003 must be applied before starting this backend') from None
+    try:
+        await run_in_threadpool(lambda: application.state.db.table('account_subscriptions').select('is_lifetime,access_scope').limit(0).execute())
+    except Exception:
+        raise RuntimeError('Database migration 005 must be applied before starting this backend') from None
+    try:
+        await run_in_threadpool(lambda: application.state.db.table('job_runs').select('lease_owner,lease_expires_at').limit(0).execute())
+        await run_in_threadpool(lambda: application.state.db.table('provider_credentials').select('provider').limit(0).execute())
+        from credential_store import cipher
+        cipher()
+    except Exception:
+        raise RuntimeError('Apply the reliability migration and configure CREDENTIAL_ENCRYPTION_KEY before deployment') from None
     async with gbp_mcp.session_manager.run():
         yield
 
@@ -60,21 +76,27 @@ app.add_middleware(
     expose_headers=["Mcp-Session-Id"],
 )
 
-# Initialize Razorpay Client
-razorpay_client = razorpay.Client(auth=(os.getenv('RAZORPAY_KEY_ID', ''), os.getenv('RAZORPAY_KEY_SECRET', '')))
-
 # Initialize Supabase Client
 supabase_url = os.getenv('SUPABASE_URL', '')
 supabase_key = os.getenv('SUPABASE_SERVICE_ROLE_KEY', '')
 
 # Only initialize if keys are present
 if supabase_url and supabase_key:
-    supabase: Client = create_client(supabase_url, supabase_key)
+    # Avoid reusing idle HTTP/2 connections after a free-tier wake-up. Disable
+    # generic write retries: a lost response must not replay a non-idempotent RPC.
+    supabase: Client = create_client(supabase_url, supabase_key, options=SyncClientOptions(
+        httpx_client=httpx.Client(http2=False, timeout=httpx.Timeout(30,connect=5),
+            limits=httpx.Limits(max_connections=20,max_keepalive_connections=0)),
+        postgrest_client_retry=False, auto_refresh_token=False, persist_session=False,
+    ))
 else:
     supabase = None
 
 app.state.db = supabase
 app.include_router(platform_router)
+app.include_router(connection_router)
+app.include_router(image_router)
+app.include_router(ops_router)
 
 
 @app.get("/.well-known/oauth-protected-resource")
@@ -115,41 +137,17 @@ class RequestModel(BaseModel):
         return normalize_location(value) if value is not None else None
 
 PRICING_PLANS = {
-    'free':        {'price': 0,    'tokens_monthly': 0,  'max_keywords': 2,  'competitor': False, 'duration_months': 0},
-    'monthly':     {'price': 500,  'tokens_monthly': 350, 'max_keywords': 5,  'competitor': False, 'duration_months': 1},
-    'half_yearly': {'price': 2500, 'tokens_monthly': 600, 'max_keywords': 10, 'competitor': True,  'duration_months': 6},
-    'yearly':      {'price': 5000, 'tokens_monthly': 750, 'max_keywords': 15, 'competitor': True,  'duration_months': 12},
+    'free':        {'price': 0,    'max_keywords': 2,  'competitor': False, 'duration_months': 0},
+    'monthly':     {'price': 500,  'max_keywords': 5,  'competitor': False, 'duration_months': 1},
+    'half_yearly': {'price': 2500, 'max_keywords': 10, 'competitor': True,  'duration_months': 6},
+    'yearly':      {'price': 5000, 'max_keywords': 15, 'competitor': True,  'duration_months': 12},
 }
-
-TOP_UP_PACKS = {
-    'standard': {'price': 500, 'tokens': 450, 'name': 'Standard Top-Up'},
-    'bulk':     {'price': 900, 'tokens': 1000, 'name': 'Bulk Top-Up'},
-}
-
-class OrderRequest(RequestModel):
-    plan_id: str
-    promo_code: str
-    user_id: str # Supabase User ID
-    location_id: str | None = None
 
 class OnboardingRequest(RequestModel):
-    user_id: str
+    user_id: str | None = None
     reply_length: str  # '10-40', '50-90', '100-120'
     seo_keywords: list[str]
     full_name: str = None
-
-class DailyClaimRequest(RequestModel):
-    user_id: str
-    location_id: str
-
-class TokenBalanceRequest(RequestModel):
-    user_id: str
-    location_id: str | None = None
-
-class PromoCodeRequest(RequestModel):
-    user_id: str
-    location_id: str | None = None
-    promo_code: str
 
 class BatchReplyRequest(RequestModel):
     user_id: str
@@ -176,113 +174,80 @@ class UserProfileRequest(RequestModel):
     user_id: str
     location_id: str | None = None
 
-class TopUpRequest(RequestModel):
-    user_id: str
-    location_id: str | None = None
-    pack_id: str = 'standard'
-    promo_code: str = ''
-
-# ─── Token System Helpers ───
 from datetime import date, datetime, timedelta, timezone
 
-async def get_token_balance(location_id: str | None, user_id: str) -> float:
-    # All Google profiles draw from the same signed-in account balance.
-    profile = await ensure_user_profile(user_id)
-    return float(profile.get('tokens_balance') or 0)
-
-async def deduct_tokens(location_id: str, user_id: str, amount: float, action: str, description: str = '', reference_id: str = '') -> dict:
-    return (await run_in_threadpool(lambda: supabase.rpc('change_tokens', {'p_location': normalize_location(location_id) if location_id else None, 'p_user': user_id, 'p_amount': -amount, 'p_action': action, 'p_description': description, 'p_reference': reference_id or None}).execute())).data
-
-async def credit_tokens(location_id: str, user_id: str, amount: float, action: str, description: str = '') -> float:
-    result = (await run_in_threadpool(lambda: supabase.rpc('change_tokens', {'p_location': normalize_location(location_id) if location_id else None, 'p_user': user_id, 'p_amount': amount, 'p_action': action, 'p_description': description, 'p_reference': None}).execute())).data
-    return result['balance']
-
 async def ensure_location_profile(location_id: str, user_id: str) -> dict:
-    (await run_in_threadpool(lambda: supabase.rpc('refresh_monthly_tokens', {'p_location': normalize_location(location_id), 'p_user': user_id}).execute()))
     rows = (await run_in_threadpool(lambda: supabase.table('location_profiles').select('*').eq('location_id', normalize_location(location_id)).eq('user_id', user_id).execute())).data
     if not rows:
         raise HTTPException(409, 'Reconnect Google locations before continuing')
     profile = rows[0]
     subscriptions = (await run_in_threadpool(lambda: supabase.table('account_subscriptions').select('*').eq('user_id', user_id).execute())).data or []
     if subscriptions:
-        subscription = subscriptions[0]
-        end = subscription.get('expires_at')
-        active = subscription.get('status') == 'active' and (not end or datetime.fromisoformat(end.replace('Z', '+00:00')).timestamp() > datetime.now().timestamp())
-        profile['plan_type'] = subscription.get('plan_type', 'free') if active else 'free'
-        profile['subscription_end'] = end
+        subscription = resolve_subscription(subscriptions[0])
+        profile.update({key: subscription[key] for key in ('plan_type', 'is_lifetime', 'unlimited_access', 'access_scope', 'max_seo_keywords', 'competitor_access')})
+        profile['subscription_end'] = subscription['expires_at']
         profile['auto_renew'] = bool(subscription.get('auto_renew'))
     else:
         end = profile.get('subscription_end')
         if profile.get('plan_type') != 'free' and (not end or datetime.fromisoformat(end.replace('Z', '+00:00')).timestamp() <= datetime.now().timestamp()):
             profile['plan_type'] = 'free'
-    return profile
+    return {key: value for key, value in profile.items() if key not in {'monthly_token_allowance', 'next_token_grant_at'}}
 
 async def ensure_user_profile(user_id: str) -> dict:
-    return (await run_in_threadpool(lambda: supabase.rpc('ensure_account', {'p_user': user_id}).execute())).data
+    profile = (await run_in_threadpool(lambda: supabase.rpc('ensure_account', {'p_user': user_id}).execute())).data
+    return {key: value for key, value in profile.items() if key not in {'tokens_balance', 'last_daily_claim', 'monthly_token_allowance', 'next_token_grant_at'}}
 
 @app.post("/api/payment/create-order")
-async def create_order(req: OrderRequest):
-    if req.plan_id not in PRICING_PLANS or req.plan_id == 'free':
-        raise HTTPException(400, 'Select a paid plan; the free plan is already available')
-    return (await run_in_threadpool(lambda: billing.create_order(supabase, razorpay_client, req.user_id, req.location_id, 'subscription', req.plan_id, PRICING_PLANS[req.plan_id], req.promo_code)))
-
-class VerifyRequest(RequestModel):
-    razorpay_payment_id: str
-    razorpay_order_id: str
-    razorpay_signature: str
-    user_id: str
-    location_id: str | None = None
-    plan_id: str = None
-
 @app.post("/api/payment/verify")
-async def verify_payment(req: VerifyRequest):
-    try:
-        return (await run_in_threadpool(lambda: billing.verify_order(supabase, razorpay_client, req, 'subscription')))
-    except razorpay.errors.SignatureVerificationError:
-        raise HTTPException(400, 'Invalid payment signature') from None
-        
+async def payment_checkout_paused():
+    billing.checkout_paused()
+
+
+class AccessCodeRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=100)
+
+
+@app.post('/api/billing/redeem-access-code')
+async def redeem_access_code(req: AccessCodeRequest, request: Request):
+    user_id = request.state.user.id
+    return await run_in_threadpool(billing.redeem_access_code, request.app.state.db, user_id, req.code)
+
 class CancelSubscriptionRequest(RequestModel):
     user_id: str
     location_id: str | None = None
 
 @app.post("/api/billing/cancel")
 async def cancel_subscription(req: CancelSubscriptionRequest):
-    await ensure_user_profile(req.user_id)
+    profile = await ensure_user_profile(req.user_id)
+    if profile.get('is_lifetime'):
+        return {'status': 'success', 'message': 'Lifetime access has no renewal to cancel.', 'subscription_end': None, 'is_lifetime': True}
     rows = (await run_in_threadpool(lambda: supabase.table('account_subscriptions').select('expires_at').eq('user_id', req.user_id).execute())).data or []
     (await run_in_threadpool(lambda: supabase.table('account_subscriptions').update({'auto_renew': False, 'updated_at': datetime.now(timezone.utc).isoformat()}).eq('user_id', req.user_id).execute()))
     (await run_in_threadpool(lambda: supabase.table('location_profiles').update({'auto_renew': False}).eq('user_id', req.user_id).execute()))
     return {'status': 'success', 'message': 'This is a prepaid account plan with no automatic renewal. Access continues until expiry.', 'subscription_end': rows[0].get('expires_at') if rows else None}
 
-@app.post("/api/payment/create-topup-order")
-async def create_topup_order(req: TopUpRequest):
-    await ensure_user_profile(req.user_id)
-    if req.pack_id not in TOP_UP_PACKS:
-        raise HTTPException(400, 'Invalid top-up pack')
-    return (await run_in_threadpool(lambda: billing.create_order(supabase, razorpay_client, req.user_id, req.location_id, 'topup', req.pack_id, TOP_UP_PACKS[req.pack_id], req.promo_code)))
-
-@app.post("/api/payment/verify-topup")
-async def verify_topup(req: VerifyRequest):
-    try:
-        return (await run_in_threadpool(lambda: billing.verify_order(supabase, razorpay_client, req, 'topup')))
-    except razorpay.errors.SignatureVerificationError:
-        raise HTTPException(400, 'Invalid payment signature') from None
-
-class ValidatePromoRequest(RequestModel):
-    code: str
-    user_id: str
-
-@app.post("/api/payment/validate-promo")
-async def validate_promo(req: ValidatePromoRequest):
-    valid = (await run_in_threadpool(lambda: billing.promo_valid(req.code)))
-    return {'valid': valid, 'discount_percent': 100 if valid else 0, 'description': 'One-time promo' if valid else 'Invalid promo code'}
-
 @app.get("/api/payment/key")
-async def get_razorpay_key():
-    return {"key": os.getenv("RAZORPAY_KEY_ID", "")}
+async def payment_key_unavailable():
+    billing.checkout_paused()
 
 @app.get("/api/health")
 async def health_check():
     return {"status": "healthy", "service": "gbp-auto-master-backend"}
+
+
+@app.get('/api/ready')
+async def readiness_check():
+    if app.state.db is None:
+        raise HTTPException(503, 'Database is not configured')
+    try:
+        await run_in_threadpool(lambda: app.state.db.table('operation_runs').select('operation_id').limit(0).execute())
+        await run_in_threadpool(lambda: app.state.db.table('review_reply_jobs').select('id').limit(0).execute())
+        await run_in_threadpool(lambda: app.state.db.table('account_subscriptions').select('is_lifetime,access_scope').limit(0).execute())
+        await run_in_threadpool(lambda: app.state.db.table('job_runs').select('lease_owner,lease_expires_at').limit(0).execute())
+        await run_in_threadpool(lambda: app.state.db.table('provider_credentials').select('provider').limit(0).execute())
+    except Exception:
+        raise HTTPException(503, 'Database or required schema is unavailable') from None
+    return {'status': 'ready', 'service': 'gbp-auto-master-backend', 'release':'2026-11-10-reliability'}
 
 class SaveAISettingsRequest(RequestModel):
     user_id: str
@@ -307,7 +272,7 @@ async def get_ai_settings(req: GetAISettingsRequest):
         
         settings = dict(ai_settings.get(req.location_id, {}))
         profile = await ensure_location_profile(req.location_id, req.user_id)
-        limit = PRICING_PLANS[profile['plan_type']]['max_keywords']
+        limit = None if profile.get('unlimited_access') else PRICING_PLANS[profile['plan_type']]['max_keywords']
         keywords = settings.get('active_keywords', [])
         settings['active_keywords'] = [k for k in keywords if isinstance(k,str)][:limit] if isinstance(keywords,list) else []
         return settings
@@ -319,11 +284,11 @@ async def get_ai_settings(req: GetAISettingsRequest):
 @app.post("/api/user/save-ai-settings")
 async def save_ai_settings(req: SaveAISettingsRequest):
     profile = await ensure_location_profile(req.location_id, req.user_id)
-    limit = PRICING_PLANS[profile['plan_type']]['max_keywords']
+    limit = None if profile.get('unlimited_access') else PRICING_PLANS[profile['plan_type']]['max_keywords']
     keywords = req.settings.get('active_keywords', [])
     if not isinstance(keywords, list) or any(not isinstance(k,str) or len(k)>120 for k in keywords):
         raise HTTPException(422, 'Keywords must be a list of short text values')
-    if len(keywords)>limit:
+    if limit is not None and len(keywords)>limit:
         raise HTTPException(422, f'This plan allows {limit} keywords')
     user = (await run_in_threadpool(lambda: supabase.auth.admin.get_user_by_id(req.user_id))).user
     settings = (user.user_metadata or {}).get('ai_settings', {})
@@ -410,7 +375,7 @@ async def run_competitor_scan(req: AdminAuthRequest):
                 business_country = None
                 user_actual_rating = "N/A"
                 user_actual_reviews = "N/A"
-                refresh_token = meta.get('google_refresh_token')
+                refresh_token = await run_in_threadpool(google_refresh_grant, supabase, u)
                 from http_client import requests
                 if refresh_token:
                     try:
@@ -702,18 +667,17 @@ async def get_google_locations(req: GoogleSyncRequest):
         if not page: break
     locations = []
     for account in accounts:
-        await run_in_threadpool(
-            lambda account=account: supabase.table('gbp_accounts').upsert({
-                'resource_name': account['name'],
-                'user_id': req.user_id,
+        synced = await run_in_threadpool(
+            lambda account=account: supabase.rpc('sync_gbp_account', {
+                'p_resource': account['name'], 'p_user': req.user_id, 'p_data': {
                 'display_name': account.get('accountName') or account.get('organizationInfo', {}).get('registeredDomain') or 'Google Business Profile account',
                 'account_type': account.get('type'),
                 'role': account.get('role'),
                 'verification_state': account.get('verificationState'),
-                'last_synced_at': datetime.now(timezone.utc).isoformat(),
-                'updated_at': datetime.now(timezone.utc).isoformat(),
-            }, on_conflict='resource_name').execute()
+            }}).execute().data
         )
+        if not synced:
+            raise HTTPException(409, 'This Google Business account is already connected to another user; its ownership and permissions were preserved')
         page = None
         while True:
             params = {'readMask': 'name,title', 'pageSize': 100}
@@ -727,8 +691,8 @@ async def get_google_locations(req: GoogleSyncRequest):
                 (await run_in_threadpool(lambda: supabase.rpc('register_location', {'p_location': location_id, 'p_user': req.user_id, 'p_account': account['name']}).execute()))
                 profile = await ensure_location_profile(location_id, req.user_id)
                 locations.append({'id': location_id, 'account_id': account['name'], 'name': location.get('title', 'Business'),
-                                  'tokens': await get_token_balance(None, req.user_id), 'subscribed': profile['plan_type'] != 'free',
-                                  'plan_details': {'plan_id': profile['plan_type'], 'expires_at': profile.get('subscription_end')}})
+                                  'subscribed': profile['plan_type'] != 'free',
+                                  'plan_details': {'plan_id': profile['plan_type'], 'expires_at': profile.get('subscription_end'), 'is_lifetime': profile.get('is_lifetime', False), 'unlimited_access': profile.get('unlimited_access', False)}})
             page = data.get('nextPageToken')
             if not page: break
     (await run_in_threadpool(lambda: supabase.auth.admin.update_user_by_id(req.user_id, {'user_metadata': {'cached_locations': locations}})))
@@ -738,29 +702,25 @@ class GoogleReviewRequest(RequestModel):
     user_id: str
     provider_token: str
     location_id: str
+    page_token: str | None = Field(default=None, max_length=4096)
 
 @app.post("/api/google/get-reviews")
 async def get_google_reviews(req: GoogleReviewRequest):
     try:
         headers = {"Authorization": f"Bearer {req.provider_token}"}
         
-        # 1. Fetch account to construct full v4 path
-        acc_url = "https://mybusinessaccountmanagement.googleapis.com/v1/accounts"
-        acc_resp = (await run_in_threadpool(lambda: requests.get(acc_url, headers=headers)))
-        if not acc_resp.ok:
-            return {"status": "error", "message": f"Google Account Fetch Error: {acc_resp.text}"}
-        accounts = acc_resp.json().get('accounts', [])
-        if not accounts:
-            return {"status": "error", "message": "No Google Business Accounts found."}
         account_name = (await run_in_threadpool(lambda: registered_account(req.location_id)))
         full_location_path = f"{account_name}/{req.location_id}"
         
         url = f"https://mybusiness.googleapis.com/v4/{full_location_path}/reviews"
-        resp = (await run_in_threadpool(lambda: requests.get(url, headers=headers)))
+        params = {'pageSize': 50, 'orderBy': 'updateTime desc'}
+        if req.page_token:
+            params['pageToken'] = req.page_token
+        resp = (await run_in_threadpool(lambda: requests.get(url, headers=headers, params=params)))
         
         if not resp.ok:
             # If Google API fails (e.g. they don't have access or billing is disabled for reviews API)
-            return {"status": "error", "message": resp.text}
+            raise HTTPException(409 if resp.status_code in (401,403) else 502, 'Could not load Google reviews; reconnect Google if authorization expired')
             
         json_resp = resp.json()
         data = json_resp.get("reviews", [])
@@ -789,7 +749,8 @@ async def get_google_reviews(req: GoogleReviewRequest):
             "totalReviewCount": total_review_count,
             "averageRating": average_rating,
             "recentAnswered": recent_answered,
-            "totalFetched": total_fetched
+            "totalFetched": total_fetched,
+            "nextPageToken": json_resp.get('nextPageToken'),
         }
     except HTTPException:
         raise
@@ -821,7 +782,7 @@ async def register_google_webhook(req: GoogleReviewRequest):
         if not topic:
             raise HTTPException(503, 'Google review notifications are not configured')
         user = (await run_in_threadpool(lambda: supabase.auth.admin.get_user_by_id(req.user_id))).user
-        refresh = (user.user_metadata or {}).get('google_refresh_token')
+        refresh = await run_in_threadpool(google_refresh_grant, supabase, user)
         if not refresh:
             raise HTTPException(409, 'Reconnect Google Business Profile before enabling notifications')
         token = await run_in_threadpool(get_offline_access_token, refresh)
@@ -869,7 +830,7 @@ async def draft_google_reviews(req: GoogleReviewRequest):
         resp = (await run_in_threadpool(lambda: requests.get(url, headers=headers)))
         
         if not resp.ok:
-            return {"status": "error", "message": resp.text}
+            raise HTTPException(409 if resp.status_code in (401,403) else 502, 'Google data could not be loaded; reconnect or retry')
             
         reviews = resp.json().get('reviews', [])
         
@@ -953,7 +914,7 @@ async def post_review_reply(req: PostReplyRequest):
         if reply_resp.ok:
             return {"status": "success", "message": "Reply posted successfully!"}
         else:
-            return {"status": "error", "message": f"Google refused reply: {reply_resp.text}"}
+            raise HTTPException(502, 'Google rejected this reply')
     except HTTPException:
         raise
     except Exception as e:
@@ -976,7 +937,7 @@ async def delete_review_reply(req: DeleteReplyRequest):
         if reply_resp.ok:
             return {"status": "success", "message": "Reply deleted successfully!"}
         else:
-            return {"status": "error", "message": f"Google refused to delete reply: {reply_resp.text}"}
+            raise HTTPException(502, 'Google rejected the reply deletion')
     except HTTPException:
         raise
     except Exception as e:
@@ -988,9 +949,12 @@ class PublishPostRequest(RequestModel):
     summary: str
     image_url: str = None
     post_type: str = "LOCAL_POST"
+    request_id: str | None = Field(default=None, min_length=8, max_length=100, pattern=r'^[A-Za-z0-9_-]+$')
 
 async def publish_local_post(req: PublishPostRequest):
     try:
+        if req.post_type not in ('LOCAL_POST', 'PHOTO'):
+            raise HTTPException(422, 'Video publishing is not enabled')
         headers = {"Authorization": f"Bearer {req.provider_token}"}
         
         acc_url = "https://mybusinessaccountmanagement.googleapis.com/v1/accounts"
@@ -1038,6 +1002,8 @@ async def publish_local_post(req: PublishPostRequest):
             resp = (await run_in_threadpool(lambda: requests.post(url, headers=headers, json=payload)))
         
         if not resp.ok:
+            if resp.status_code >= 500 or resp.status_code == 408:
+                raise HTTPException(502, 'Google delivery is uncertain; reconcile it before retrying')
             return {"status": "error", "message": f"Google refused post: {resp.text}"}
             
         return {"status": "success", "post_data": resp.json()}
@@ -1083,7 +1049,7 @@ async def get_google_analytics(req: GoogleReviewRequest):
         resp = (await run_in_threadpool(lambda: requests.get(url, headers=headers, params=params)))
         
         if not resp.ok:
-            return {"status": "error", "message": f"Analytics Fetch Error (Tried {url}): {resp.text}"}
+            raise HTTPException(409 if resp.status_code in (401,403) else 502, 'Google analytics could not be loaded; reconnect or retry')
             
         return {"status": "success", "analytics": resp.json()}
     except Exception as e:
@@ -1122,7 +1088,7 @@ async def get_google_search_keywords(req: GoogleReviewRequest):
         resp = (await run_in_threadpool(lambda: requests.get(url, headers=headers, params=params)))
         
         if not resp.ok:
-            return {"status": "error", "message": resp.text}
+            raise HTTPException(409 if resp.status_code in (401,403) else 502, 'Google data could not be loaded; reconnect or retry')
             
         return {"status": "success", "keywords": resp.json().get("searchKeywordsMonthlyImpressions", [])}
     except Exception as e:
@@ -1142,7 +1108,7 @@ async def scrub_calendar_images():
     but keeps the text caption in the database.
     """
     try:
-        today = datetime.now(timezone.utc).date().isoformat()
+        today = (datetime.now(timezone.utc)-timedelta(days=30)).date().isoformat()
         
         # 1. Fetch published posts older than today that still have images
         posts = (await run_in_threadpool(lambda: supabase.table('calendar_posts')\
@@ -1155,6 +1121,10 @@ async def scrub_calendar_images():
         
         for p in posts.data:
             if not p.get('image_url'):
+                continue
+            registered = await run_in_threadpool(lambda p=p: supabase.table('media_assets').select('id').eq('public_url',p['image_url']).neq('status','deleted').limit(1).execute())
+            pending = await run_in_threadpool(lambda p=p: supabase.table('calendar_posts').select('id').eq('image_url',p['image_url']).in_('status',['scheduled','publishing']).limit(1).execute())
+            if registered.data or pending.data:
                 continue
             # image_url format: https://xyz.supabase.co/storage/v1/object/public/calendar_images/USER_ID/FILENAME.jpg
             # Extract just the "USER_ID/FILENAME.jpg" part
@@ -1196,7 +1166,7 @@ def get_offline_access_token(refresh_token: str) -> str:
     }
     resp = requests.post(url, data=payload)
     if not resp.ok:
-        raise Exception(f"OAuth error: {resp.text}")
+        raise PermissionError('Google authorization expired; reconnect Google Business Profile')
     return resp.json().get('access_token')
 
 class RefreshTokenRequest(RequestModel):
@@ -1210,22 +1180,26 @@ async def api_refresh_google_token(req: RefreshTokenRequest):
     """
     try:
         if not supabase:
-            return {"status": "error", "message": "Supabase not configured"}
+            raise HTTPException(503, 'Database is not configured')
             
         user_data = (await run_in_threadpool(lambda: supabase.auth.admin.get_user_by_id(req.user_id)))
         if not user_data.user:
-            return {"status": "error", "message": "User not found"}
+            raise HTTPException(404, 'User not found')
             
-        refresh_token = user_data.user.user_metadata.get('google_refresh_token')
+        refresh_token = await run_in_threadpool(google_refresh_grant, supabase, user_data.user)
         if not refresh_token:
-            return {"status": "error", "message": "No refresh token found for this user"}
+            raise HTTPException(409, 'Reconnect Google Business Profile')
             
         new_access_token = (await run_in_threadpool(lambda: get_offline_access_token(refresh_token)))
         if not new_access_token:
-            return {"status": "error", "message": "Google authorization was rejected. Reconnect Google Business Profile."}
+            raise HTTPException(409, 'Google authorization was rejected; reconnect Google Business Profile')
         return {"status": "success", "provider_token": new_access_token, "expires_in": 3600}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    except HTTPException:
+        raise
+    except PermissionError as error:
+        raise HTTPException(409, str(error)) from None
+    except Exception:
+        raise HTTPException(502, 'Could not refresh Google authorization; reconnect Google if this persists') from None
 
 @app.get("/api/cron/publish-scheduled")
 async def publish_scheduled_posts():
@@ -1235,8 +1209,11 @@ async def publish_scheduled_posts():
     failed = 0
     for post in posts:
         try:
+            if datetime.fromisoformat(post['publish_at'].replace('Z','+00:00')) < datetime.now(timezone.utc)-timedelta(hours=1):
+                await run_in_threadpool(lambda post=post: supabase.table('calendar_posts').update({'status':'needs_review'}).eq('id',post['id']).eq('status','scheduled').execute())
+                continue
             user = (await run_in_threadpool(lambda: supabase.auth.admin.get_user_by_id(post['user_id']))).user
-            refresh = (user.user_metadata or {}).get('google_refresh_token')
+            refresh = await run_in_threadpool(google_refresh_grant, supabase, user)
             if not refresh:
                 failed += 1
                 continue
@@ -1300,11 +1277,10 @@ async def google_reviews_webhook(req: Request):
     }).execute())).data
     if not claimed:
         return {'status': 'ignored', 'reason': 'Duplicate notification'}
-    # Free accounts receive welcome credits too. Publishing is governed by the
-    # normal atomic credit reservation, so plan type must not discard the event.
+    # Publishing uses a delivery claim; account balances do not govern events.
     await ensure_location_profile(location, user_id)
     user = (await run_in_threadpool(lambda: supabase.auth.admin.get_user_by_id(user_id))).user
-    refresh_token = (user.user_metadata or {}).get('google_refresh_token')
+    refresh_token = await run_in_threadpool(google_refresh_grant, supabase, user)
     if not refresh_token:
         await _finish_inbound_event(event_id, 'ignored')
         return {'status': 'ignored', 'reason': 'Reconnect Google'}
@@ -1351,14 +1327,8 @@ async def google_reviews_webhook(req: Request):
             for term in blocked_terms
         )
         daily_limit_reached = False
-        if mode == 'auto_publish':
-            day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-            public_jobs = (await run_in_threadpool(
-                lambda: supabase.table('review_reply_jobs').select('id')
-                .eq('rule_id', rule['id']).in_('status', ['scheduled', 'publishing', 'published'])
-                .gte('created_at', day_start).execute()
-            )).data or []
-            daily_limit_reached = len(public_jobs) >= int(rule.get('daily_limit') or 20)
+        # The database enforces this atomically at publication, in the account's
+        # business timezone, rather than counting UTC draft-creation dates here.
         status = (
             'draft' if mode == 'draft' else
             'pending_approval' if mode == 'approval' or safety_requires_approval or daily_limit_reached else
@@ -1378,7 +1348,8 @@ async def google_reviews_webhook(req: Request):
             ),
             'updated_at': datetime.now(timezone.utc).isoformat(),
         }
-        saved = (await run_in_threadpool(lambda: supabase.table('review_reply_jobs').upsert(job, on_conflict='user_id,review_name').execute())).data or []
+        saved_job = await run_in_threadpool(lambda: supabase.rpc('enqueue_review_reply', {'p_job':job}).execute().data)
+        saved = [saved_job] if saved_job else []
         await _finish_inbound_event(event_id, 'completed')
         if status == 'scheduled' and int(rule.get('delay_minutes') or 0) == 0 and saved:
             delivery = await publish_due_review_reply_jobs(job_id=saved[0]['id'], limit=1)
@@ -1393,7 +1364,7 @@ async def google_reviews_webhook(req: Request):
         await _finish_inbound_event(event_id, 'completed')
         return result
     except HTTPException as error:
-        if error.status_code in (402,409):
+        if error.status_code == 409:
             await _finish_inbound_event(event_id, 'ignored')
             return {'status': 'ignored', 'reason': error.detail}
         await _finish_inbound_event(event_id, 'failed', str(error.detail)[:500])
@@ -1462,7 +1433,7 @@ async def get_user_profile(req: UserProfileRequest):
     profile = await ensure_user_profile(req.user_id)
     if req.location_id:
         location = await ensure_location_profile(req.location_id, req.user_id)
-        profile = {**profile, **location, 'max_seo_keywords': PRICING_PLANS[location['plan_type']]['max_keywords']}
+        profile = {**profile, **location, 'max_seo_keywords': None if location.get('unlimited_access') else PRICING_PLANS[location['plan_type']]['max_keywords']}
     return profile
 
 
@@ -1472,12 +1443,13 @@ async def reset_onboarding(req: UserProfileRequest):
     return {'status': 'success'}
 
 @app.post("/api/user/onboarding")
-async def save_onboarding(req: OnboardingRequest):
-    profile = await ensure_user_profile(req.user_id)
+async def save_onboarding(req: OnboardingRequest, request: Request):
+    user_id = request.state.user.id
+    profile = await ensure_user_profile(user_id)
     
     # Validate keyword count (free plan = max 2)
     plan = PRICING_PLANS.get(profile.get('plan_type', 'free'), PRICING_PLANS['free'])
-    max_kw = plan['max_keywords']
+    max_kw = None if profile.get('unlimited_access') else plan['max_keywords']
     keywords = req.seo_keywords[:max_kw]  # Trim to allowed count
     
     update_data = {
@@ -1489,48 +1461,21 @@ async def save_onboarding(req: OnboardingRequest):
     if req.full_name:
         update_data['full_name'] = req.full_name
     
-    (await run_in_threadpool(lambda: supabase.table('user_profiles').update(update_data).eq('id', req.user_id).execute()))
+    (await run_in_threadpool(lambda: supabase.table('user_profiles').update(update_data).eq('id', user_id).execute()))
     
     return {'status': 'success', 'keywords_saved': len(keywords), 'max_allowed': max_kw}
 
-# ─── Token System ───
-
-@app.post("/api/tokens/claim-daily")
-async def claim_daily_tokens(req: DailyClaimRequest):
-    return {'status': 'error', 'message': 'Daily tokens feature has been deprecated in favor of the new 200 token sign-up bonus.'}
-
-@app.post("/api/tokens/balance")
-async def get_token_balance_endpoint(req: TokenBalanceRequest):
-    account = await ensure_user_profile(req.user_id)
-    locations = (await run_in_threadpool(lambda: supabase.table('location_profiles').select('location_id').eq('user_id', req.user_id).execute())).data
-    for row in locations:
-        (await run_in_threadpool(lambda: supabase.rpc('refresh_monthly_tokens', {'p_location': row['location_id'], 'p_user': req.user_id}).execute()))
-    account = await ensure_user_profile(req.user_id)
-    profile = await ensure_location_profile(req.location_id, req.user_id) if req.location_id else None
-    ledger = (await run_in_threadpool(lambda: supabase.table('account_token_ledger').select('*').eq('user_id', req.user_id).order('created_at', desc=True).limit(50).execute()))
-    return {'balance': float(account.get('tokens_balance') or 0), 'scope': 'account',
-            'plan_type': profile['plan_type'] if profile else 'free', 'history': ledger.data or []}
-
-@app.post("/api/tokens/redeem-promo")
-async def redeem_promo_code(req: PromoCodeRequest):
-    await ensure_user_profile(req.user_id)
-    if not (await run_in_threadpool(lambda: billing.promo_valid(req.promo_code))):
-        raise HTTPException(400, 'Invalid promo code')
-    return (await run_in_threadpool(lambda: billing.create_order(supabase, razorpay_client, req.user_id, req.location_id, 'promo', 'token_promo', {'price': 0, 'tokens': 1000}, req.promo_code)))
-
-# ─── Batch Review Reply with Token System ───
+# ─── Batch Review Reply ───
 
 @app.post("/api/reviews/batch-reply")
 async def batch_reply_reviews(req: BatchReplyRequest):
     profile = await ensure_location_profile(req.location_id, req.user_id)
     headers = {'Authorization': f'Bearer {req.access_token}'}
-    response = (await run_in_threadpool(lambda: requests.get(f"https://mybusiness.googleapis.com/v4/{profile['account_id']}/{req.location_id}/reviews", headers=headers)))
-    if not response.ok:
-        raise HTTPException(502, 'Could not fetch Google reviews')
     settings = await get_ai_settings(GetAISettingsRequest(user_id=req.user_id, location_id=req.location_id))
     if not settings.get('is_ai_active', True):
-        return {'status': 'success', 'replied': [], 'tokens_used': 0, 'message': 'AI is disabled for this location'}
-    reviews = [r for r in response.json().get('reviews', []) if not r.get('reviewReply')]
+        return {'status': 'success', 'replied': [], 'message': 'AI is disabled for this location'}
+    all_reviews, next_page = await scan_google_reviews(profile['account_id'], req.location_id, req.access_token)
+    reviews = [r for r in all_reviews if not r.get('reviewReply')]
     if not settings.get('reply_to_1_star', False):
         reviews = [r for r in reviews if r.get('starRating') not in ('ONE','TWO')]
     replies = []
@@ -1540,9 +1485,54 @@ async def batch_reply_reviews(req: BatchReplyRequest):
             replies.append({'review_name': review['name'], **result})
         except HTTPException as error:
             replies.append({'review_name': review['name'], 'status': 'failed', 'error': error.detail})
-            if error.status_code == 402: break
-    return {'status': 'success', 'replied': replies, 'tokens_used': sum(2.5 for r in replies if r['status']=='published'),
-            'balance': await get_token_balance(req.location_id, req.user_id)}
+    return {'status': 'success', 'replied': replies, 'more_backlog': bool(next_page)}
+
+
+async def scan_google_reviews(account, location, token, max_pages=5):
+    """Bounded traversal, reporting continuation instead of hiding older pages."""
+    reviews, page, seen = [], None, set()
+    for _ in range(max_pages):
+        params = {'pageSize':50,'orderBy':'updateTime desc'}
+        if page:
+            params['pageToken'] = page
+        response = await run_in_threadpool(lambda: requests.get(
+            f'https://mybusiness.googleapis.com/v4/{account}/{location}/reviews',
+            headers={'Authorization':f'Bearer {token}'},params=params))
+        if not response.ok:
+            raise HTTPException(502, 'Could not scan Google reviews')
+        data = response.json()
+        reviews.extend(data.get('reviews', []))
+        page = data.get('nextPageToken')
+        if not page:
+            break
+        if page in seen:
+            raise HTTPException(502, 'Google repeated a pagination token; scan stopped safely')
+        seen.add(page)
+    return reviews, page
+
+
+async def poll_rule_reviews(user_id, location, token):
+    """Webhook fallback uses the same validation, queue and deduplication path."""
+    from types import SimpleNamespace
+    import hashlib
+    account = await run_in_threadpool(registered_account, location)
+    reviews, next_page = await scan_google_reviews(account, location, token, max_pages=2)
+    published = failed = 0
+    for review in [item for item in reviews if not item.get('reviewReply')][:10]:
+        name = review.get('name')
+        if not name:
+            continue
+        key = hashlib.sha256((name+str(review.get('updateTime',''))).encode()).hexdigest()
+        payload = {'reviewName':name,'locationName':location}
+        async def notification(payload=payload, key=key):
+            return {'message':{'messageId':'poll:'+key,'data':base64.b64encode(json.dumps(payload).encode()).decode()}}
+        try:
+            result = await google_reviews_webhook(SimpleNamespace(json=notification))
+            published += result.get('delivery',{}).get('published',0)
+            failed += result.get('delivery',{}).get('failed',0)
+        except Exception:
+            failed += 1
+    return {'published':published,'failed':failed,'more_backlog':bool(next_page)}
 
 @app.post("/api/reviews/regenerate-reply")
 async def regenerate_reply(req: RegenerateReplyRequest):
@@ -1550,37 +1540,34 @@ async def regenerate_reply(req: RegenerateReplyRequest):
     review = {'name': req.review_name, 'comment': req.review_text, 'starRating': req.star_rating}
     return await generate_and_publish(req.user_id, req.location_id, req.access_token, review, settings, regenerate=True)
 
-# ─── Rank Report with Token System ───
+# ─── Rank Report ───
 
 @app.post("/api/rank/generate-report")
 async def generate_rank_report(req: RankReportRequest):
     await ensure_location_profile(req.location_id, req.user_id)
     if not re.fullmatch(r'[A-Za-z0-9_-]{8,100}', req.request_id):
         raise HTTPException(422, 'request_id may contain only letters, numbers, underscores, and hyphens')
-    operation = 'rank-report:' + req.request_id
-    (await run_in_threadpool(lambda: reserve_operation(req.location_id, req.user_id, RANK_REPORT_COST, operation)))
-    try:
+    from report_cache import measured_report
+    async def token_getter():
         user = (await run_in_threadpool(lambda: supabase.auth.admin.get_user_by_id(req.user_id))).user
-        refresh_token = (user.user_metadata or {}).get('google_refresh_token') if user else None
-        if not refresh_token:
+        refresh = await run_in_threadpool(google_refresh_grant, supabase, user) if user else None
+        if not refresh:
             raise HTTPException(409, 'Reconnect Google Business Profile before generating a rank report')
-        token = await run_in_threadpool(lambda: get_offline_access_token(refresh_token))
-        report = await run_in_threadpool(lambda: run_local_rank_scan(
-            location_id=req.location_id, keyword=req.keyword, google_access_token=token,
-        ))
-    except Exception as error:
-        (await run_in_threadpool(lambda: finish_operation(operation, False)))
-        if isinstance(error, HTTPException):
-            raise
-        raise HTTPException(502, str(error)) from error
-    (await run_in_threadpool(lambda: finish_operation(operation, True)))
+        return await run_in_threadpool(get_offline_access_token, refresh)
+    try:
+        report = await measured_report(supabase, req.user_id, req.location_id, req.keyword, req.request_id, token_getter, run_local_rank_scan)
+    except HTTPException:
+        raise
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from None
+    except Exception:
+        raise HTTPException(502, 'Rank report could not be generated; retry with the same request ID') from None
     signing_secret = os.getenv('RANK_REPORT_SIGNING_SECRET') or os.getenv('SUPABASE_SERVICE_ROLE_KEY', '')
     pdf_token, pdf_expires_at = create_rank_pdf_token(report, signing_secret)
     api_base = os.getenv('PUBLIC_API_URL', 'https://gbp-auto-master-backend-us.onrender.com').rstrip('/')
-    return {'status':'success', **report, 'credits_charged': RANK_REPORT_COST,
+    return {'status':'success', **report,
             'pdf_download_url': f'{api_base}/api/rank/report.pdf?token={pdf_token}',
-            'pdf_expires_at': datetime.fromtimestamp(pdf_expires_at, timezone.utc).isoformat(),
-            'balance':await get_token_balance(req.location_id,req.user_id)}
+            'pdf_expires_at': datetime.fromtimestamp(pdf_expires_at, timezone.utc).isoformat()}
 
 
 
@@ -1591,19 +1578,19 @@ async def location_subscriptions(user_id: str) -> dict:
     for row in rows:
         profile = await ensure_location_profile(row['location_id'], user_id)
         if profile['plan_type'] != 'free':
-            result[row['location_id']] = {'status': 'active', 'plan_id': profile['plan_type'], 'expires_at': profile['subscription_end']}
+            result[row['location_id']] = {'status': 'active', 'plan_id': profile['plan_type'], 'expires_at': profile['subscription_end'], 'is_lifetime': profile.get('is_lifetime', False), 'unlimited_access': profile.get('unlimited_access', False)}
     return result
 
 
-def reserve_operation(location_id, user_id, amount, operation_id):
-    result = supabase.rpc('reserve_tokens', {'p_operation': operation_id, 'p_location': normalize_location(location_id) if location_id else None, 'p_user': user_id, 'p_amount': amount}).execute().data
+def reserve_operation(location_id, user_id, operation_id):
+    result = supabase.rpc('claim_operation', {'p_operation': operation_id, 'p_location': normalize_location(location_id) if location_id else None, 'p_user': user_id}).execute().data
     if not result['success']:
-        raise HTTPException(409 if 'already' in result.get('error', '') else 402, result.get('error', 'Insufficient tokens'))
+        raise HTTPException(409, result.get('error', 'Operation is already in progress or completed'))
     return result
 
 
 def finish_operation(operation_id, success):
-    supabase.rpc('finish_tokens', {'p_operation': operation_id, 'p_success': success}).execute()
+    supabase.rpc('finish_operation', {'p_operation': operation_id, 'p_success': success}).execute()
 
 
 def registered_account(location_id):
@@ -1619,7 +1606,7 @@ async def generate_and_publish(user_id, location_id, token, review, settings, re
     if not re.fullmatch(re.escape(profile['account_id']+'/'+normalize_location(location_id)) + r'/reviews/[\w-]+', name):
         raise HTTPException(403, 'Review does not belong to this location')
     operation = ('regenerate:' + uuid4().hex) if regenerate else 'reply:' + name
-    (await run_in_threadpool(lambda: reserve_operation(location_id, user_id, 2.5, operation)))
+    (await run_in_threadpool(lambda: reserve_operation(location_id, user_id, operation)))
     try:
         prompt = f"Write only a professional reply to this review: {review.get('comment','')} ({review.get('starRating','')}). Tone: {settings.get('ai_tone','Professional')}. Keywords to use naturally: {settings.get('active_keywords', [])}. Instructions: {settings.get('custom_instructions','')}. Do not invent facts."
         reply = (await run_in_threadpool(lambda: generate_ai_reply(prompt)))
@@ -1634,8 +1621,8 @@ async def generate_and_publish(user_id, location_id, token, review, settings, re
     except Exception:
         raise HTTPException(502, 'Google delivery is uncertain; the reply is held for reconciliation') from None
     (await run_in_threadpool(lambda: finish_operation(operation, response.ok)))
-    if not response.ok: raise HTTPException(502, 'Google rejected the reply; tokens refunded')
-    return {'status':'published','ai_reply':reply,'balance':await get_token_balance(location_id,user_id)}
+    if not response.ok: raise HTTPException(502, 'Google rejected the reply')
+    return {'status':'published','ai_reply':reply}
 
 
 class SchedulePostRequest(RequestModel):
@@ -1765,12 +1752,12 @@ async def publish_due_campaign_deliveries(due: str | None = None) -> dict:
     deliveries = (await run_in_threadpool(lambda: supabase.table('campaign_locations').select('*').eq('status', 'scheduled').lte('scheduled_for', due).limit(100).execute())).data or []
     published = failed = uncertain = 0
     for delivery in deliveries:
-        claimed = (await run_in_threadpool(lambda delivery=delivery: supabase.table('campaign_locations').update({
-            'status': 'publishing', 'attempt_count': int(delivery.get('attempt_count') or 0) + 1,
-            'last_error': None, 'updated_at': datetime.now(timezone.utc).isoformat(),
-        }).eq('campaign_id', delivery['campaign_id']).eq('location_id', delivery['location_id']).eq('status', 'scheduled').execute())).data or []
+        claimed = await run_in_threadpool(lambda delivery=delivery: supabase.rpc('claim_campaign_delivery', {
+            'p_campaign': delivery['campaign_id'], 'p_location': delivery['location_id'],
+        }).execute().data)
         if not claimed:
             continue
+        delivery_started = False
         try:
             campaigns = (await run_in_threadpool(lambda delivery=delivery: supabase.table('content_campaigns').select('*').eq('id', delivery['campaign_id']).eq('user_id', delivery['user_id']).execute())).data or []
             if not campaigns:
@@ -1784,13 +1771,14 @@ async def publish_due_campaign_deliveries(due: str | None = None) -> dict:
                     raise ValueError('Campaign media not found')
                 media = media_rows[0]
             user = (await run_in_threadpool(lambda delivery=delivery: supabase.auth.admin.get_user_by_id(delivery['user_id']))).user
-            refresh = (user.user_metadata or {}).get('google_refresh_token')
+            refresh = await run_in_threadpool(google_refresh_grant, supabase, user)
             if not refresh:
                 raise PermissionError('Google connection requires authorization')
             token = await run_in_threadpool(get_offline_access_token, refresh)
             account_id = await run_in_threadpool(registered_account, delivery['location_id'])
             url = f"https://mybusiness.googleapis.com/v4/{account_id}/{delivery['location_id']}/localPosts"
             payload = _campaign_google_payload(campaign, media)
+            delivery_started = True
             try:
                 response = await run_in_threadpool(lambda: requests.post(url, headers={'Authorization': f'Bearer {token}'}, json=payload))
             except Exception:
@@ -1802,6 +1790,8 @@ async def publish_due_campaign_deliveries(due: str | None = None) -> dict:
                 await _refresh_campaign_status(delivery['campaign_id'])
                 continue
             if not response.ok:
+                if response.status_code >= 500 or response.status_code == 408:
+                    raise RuntimeError('Google delivery is uncertain')
                 failed += 1
                 await run_in_threadpool(lambda delivery=delivery, response=response: supabase.table('campaign_locations').update({
                     'status': 'failed', 'last_error': f'Google rejected the post ({response.status_code})',
@@ -1817,9 +1807,15 @@ async def publish_due_campaign_deliveries(due: str | None = None) -> dict:
                 }).eq('campaign_id', delivery['campaign_id']).eq('location_id', delivery['location_id']).eq('status', 'publishing').execute())
             await _refresh_campaign_status(delivery['campaign_id'])
         except Exception as error:
-            failed += 1
+            # After dispatch, even a JSON/DB/audit error is uncertain. Keep the
+            # delivery held so another worker cannot republish accepted content.
+            if delivery_started:
+                uncertain += 1
+            else:
+                failed += 1
             await run_in_threadpool(lambda delivery=delivery, error=error: supabase.table('campaign_locations').update({
-                'status': 'failed', 'last_error': str(error)[:500],
+                'status': 'publishing' if delivery_started else 'failed',
+                'last_error': 'Delivery needs reconciliation; inspect Google before retrying' if delivery_started else 'Preparation failed; inspect server logs',
                 'updated_at': datetime.now(timezone.utc).isoformat(),
             }).eq('campaign_id', delivery['campaign_id']).eq('location_id', delivery['location_id']).eq('status', 'publishing').execute())
             await _refresh_campaign_status(delivery['campaign_id'])
@@ -1836,30 +1832,29 @@ async def publish_due_review_reply_jobs(
     jobs = (await run_in_threadpool(lambda: query.limit(limit).execute())).data or []
     published = failed = uncertain = 0
     for job in jobs:
-        claimed = (await run_in_threadpool(lambda job=job: supabase.table('review_reply_jobs').update({
-            'status': 'publishing', 'attempt_count': int(job.get('attempt_count') or 0) + 1,
-            'last_error': None, 'updated_at': datetime.now(timezone.utc).isoformat(),
-        }).eq('id', job['id']).eq('user_id', job['user_id']).eq('status', 'scheduled').execute())).data or []
+        claimed = await run_in_threadpool(lambda job=job: supabase.rpc('claim_review_delivery', {'p_job': job['id']}).execute().data)
         if not claimed:
             continue
         operation = f"auto-reply:{job['id']}"
-        reservation = (await run_in_threadpool(lambda job=job, operation=operation: supabase.rpc('reserve_tokens', {
+        reservation = (await run_in_threadpool(lambda job=job, operation=operation: supabase.rpc('claim_operation', {
             'p_operation': operation, 'p_location': job['location_id'],
-            'p_user': job['user_id'], 'p_amount': 2.5,
+            'p_user': job['user_id'],
         }).execute())).data or {}
         if not reservation.get('success'):
             failed += 1
             await run_in_threadpool(lambda job=job, reservation=reservation: supabase.table('review_reply_jobs').update({
-                'status': 'failed', 'last_error': reservation.get('error') or 'Insufficient credits',
+                'status': 'failed', 'last_error': reservation.get('error') or 'Operation is already in progress or completed',
                 'updated_at': datetime.now(timezone.utc).isoformat(),
             }).eq('id', job['id']).eq('status', 'publishing').execute())
             continue
+        delivery_started = False
         try:
             user = (await run_in_threadpool(lambda job=job: supabase.auth.admin.get_user_by_id(job['user_id']))).user
-            refresh = (user.user_metadata or {}).get('google_refresh_token')
+            refresh = await run_in_threadpool(google_refresh_grant, supabase, user)
             if not refresh:
                 raise PermissionError('Google connection requires authorization')
             token = await run_in_threadpool(get_offline_access_token, refresh)
+            delivery_started = True
             try:
                 response = await run_in_threadpool(lambda job=job, token=token: requests.put(
                     f"https://mybusiness.googleapis.com/v4/{job['review_name']}/reply",
@@ -1872,33 +1867,37 @@ async def publish_due_review_reply_jobs(
                     'updated_at': datetime.now(timezone.utc).isoformat(),
                 }).eq('id', job['id']).eq('status', 'publishing').execute())
                 continue
-            await run_in_threadpool(lambda operation=operation, response=response: supabase.rpc('finish_tokens', {
+            await run_in_threadpool(lambda operation=operation, response=response: supabase.rpc('finish_operation', {
                 'p_operation': operation, 'p_success': response.ok,
             }).execute())
             if not response.ok:
                 failed += 1
                 await run_in_threadpool(lambda job=job, response=response: supabase.table('review_reply_jobs').update({
-                    'status': 'failed', 'last_error': f'Google rejected the reply ({response.status_code}); credits refunded',
+                    'status': 'failed', 'last_error': f'Google rejected the reply ({response.status_code})',
                     'updated_at': datetime.now(timezone.utc).isoformat(),
                 }).eq('id', job['id']).eq('status', 'publishing').execute())
                 continue
             published += 1
             await run_in_threadpool(lambda job=job: supabase.table('review_reply_jobs').update({
                 'status': 'published', 'published_at': datetime.now(timezone.utc).isoformat(),
-                'credits_charged': 2.5, 'updated_at': datetime.now(timezone.utc).isoformat(),
+                'credits_charged': 0, 'updated_at': datetime.now(timezone.utc).isoformat(),
             }).eq('id', job['id']).eq('status', 'publishing').execute())
             await run_in_threadpool(lambda job=job: supabase.table('audit_events').insert({
                 'user_id': job['user_id'], 'location_id': job['location_id'], 'actor_type': 'automation',
                 'action': 'publish_reply', 'resource_type': 'google_review',
-                'resource_id': job['review_name'], 'detail': {'credits_charged': 2.5},
+                'resource_id': job['review_name'], 'detail': {},
             }).execute())
         except Exception as error:
-            await run_in_threadpool(lambda operation=operation: supabase.rpc('finish_tokens', {
-                'p_operation': operation, 'p_success': False,
-            }).execute())
-            failed += 1
+            if not delivery_started:
+                await run_in_threadpool(lambda operation=operation: supabase.rpc('finish_operation', {
+                    'p_operation': operation, 'p_success': False,
+                }).execute())
+                failed += 1
+            else:
+                uncertain += 1
             await run_in_threadpool(lambda job=job, error=error: supabase.table('review_reply_jobs').update({
-                'status': 'failed', 'last_error': str(error)[:500],
+                'status': 'publishing' if delivery_started else 'failed',
+                'last_error': 'Delivery needs reconciliation; inspect Google before retrying' if delivery_started else 'Preparation failed; inspect server logs',
                 'updated_at': datetime.now(timezone.utc).isoformat(),
             }).eq('id', job['id']).eq('status', 'publishing').execute())
     return {'published': published, 'failed': failed, 'uncertain': uncertain}
@@ -1907,10 +1906,24 @@ async def publish_due_review_reply_jobs(
 @app.post('/api/google/publish-post')
 async def publish_immediate_post(req: PublishPostRequest, request: Request):
     owner = (await run_in_threadpool(lambda: supabase.table('location_profiles').select('user_id').eq('location_id',req.location_id).single().execute())).data['user_id']
-    operation = 'publish:' + uuid4().hex
-    (await run_in_threadpool(lambda: reserve_operation(req.location_id,owner,5,operation)))
+    if not req.request_id:
+        raise HTTPException(422, 'Provide a stable request_id and reuse it when retrying')
+    operation = 'publish:' + owner + ':' + req.request_id
+    import hashlib
+    fingerprint = hashlib.sha256(json.dumps(req.model_dump(exclude={'provider_token','request_id'}),sort_keys=True).encode()).hexdigest()
+    claim = await run_in_threadpool(lambda: supabase.rpc('claim_result_operation', {
+        'p_operation':operation,'p_location':req.location_id,'p_user':owner,'p_fingerprint':fingerprint,
+    }).execute().data)
+    if not claim.get('success'):
+        raise HTTPException(409, claim.get('error','Operation is already running'))
+    if claim.get('replayed'):
+        return claim['result']
     result = await publish_local_post(req)
-    (await run_in_threadpool(lambda: finish_operation(operation,result.get('status')=='success')))
+    if result.get('status') == 'success':
+        await run_in_threadpool(lambda: supabase.rpc('complete_result_operation', {'p_operation':operation,'p_result':result}).execute())
+    else:
+        await run_in_threadpool(finish_operation, operation, False)
+        raise HTTPException(502, 'Google rejected this post; inspect it before trying again')
     return result
 
 
@@ -1930,10 +1943,10 @@ async def run_review_job():
     failed = 0
     for user in users:
         subscriptions = await location_subscriptions(user.id)
-        refresh = (user.user_metadata or {}).get('google_refresh_token')
-        if not subscriptions or not refresh:
-            continue
         try:
+            refresh = await run_in_threadpool(google_refresh_grant, supabase, user)
+            if not subscriptions or not refresh:
+                continue
             token = (await run_in_threadpool(get_offline_access_token, refresh))
         except Exception:
             failed += 1
@@ -1942,7 +1955,15 @@ async def run_review_job():
             # V2 webhook automation owns only the locations covered by a rule.
             # Do not let one configured location disable legacy replies for all
             # other locations on the same Google account.
-            if await _resolve_review_automation_rule(user.id, location):
+            rule = await _resolve_review_automation_rule(user.id, location)
+            if rule:
+                if rule.get('enabled'):
+                    try:
+                        result = await poll_rule_reviews(user.id, location, token)
+                        sent += result['published']
+                        failed += result['failed']
+                    except Exception:
+                        failed += 1
                 continue
             try:
                 result = await sync_and_reply_reviews(GoogleReviewRequest(user_id=user.id, location_id=location, provider_token=token))
@@ -1951,7 +1972,7 @@ async def run_review_job():
             except Exception:
                 failed += 1
     if failed:
-        raise HTTPException(502, f'{sent} replies sent; {failed} operations need attention. Inspect token_operations and Google connections.')
+        raise HTTPException(502, f'{sent} replies sent; {failed} operations need attention. Inspect operation_runs and Google connections.')
     return {'status':'success','message':f'AI sent {sent} replies'}
 
 

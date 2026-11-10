@@ -1,3 +1,5 @@
+> **Retired billing design:** Usage credits were removed on 8 November 2026. Apply migration 004 and follow `docs/DEPLOY_CREDIT_RETIREMENT.md`. Credit prices, grants and wallet instructions below describe the previous version.
+
 # Deployment and verification
 
 The changes in this checkout are **not deployed**. Apply the database migration and

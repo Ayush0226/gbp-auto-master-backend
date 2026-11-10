@@ -20,14 +20,14 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from starlette.concurrency import run_in_threadpool
 
 from mcp_auth import DEFAULT_MCP_RESOURCE_URL, OAUTH_SCOPES
-from rank_service import RANK_REPORT_COST, create_rank_pdf_token, run_local_rank_scan
+from entitlements import resolve_subscription
+from rank_service import create_rank_pdf_token, run_local_rank_scan
 
 
 SERVER_INSTRUCTIONS = (
     "Use GBP Master to manage the authenticated user's Google Business Profile accounts, "
-    "locations, reviews, review automation, content campaigns, scheduled posts and shared "
-    "credits. Resolve locations before location-scoped actions. Show the exact public text, "
-    "targets, time and credit charge before a write that publishes or schedules content. "
+    "locations, reviews, review automation, content campaigns and scheduled posts. Resolve locations before location-scoped actions. Show the exact public text, "
+    "targets and time before a write that publishes or schedules content. "
     "Never ask for or return Google access tokens, refresh tokens or Supabase user IDs."
 )
 
@@ -40,20 +40,14 @@ class LocationSummary(BaseModel):
     account_id: str | None = None
     plan: str
     subscription_expires_at: datetime | None
+    is_lifetime: bool = False
+    unlimited_access: bool = False
 
 
 class LocationList(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     locations: list[LocationSummary]
-
-
-class ActionCosts(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    publish_review_reply: float = 2.5
-    schedule_post: float = 5.0
-    local_rank_report: float = 10.0
 
 
 class LocalRankResult(BaseModel):
@@ -80,17 +74,8 @@ class LocalRankReport(BaseModel):
     actual_rank: int | None = Field(default=None, ge=1, le=11)
     found_in_top_11: bool
     results: list[LocalRankResult]
-    credits_charged: float = 10.0
-    remaining_balance: float
     pdf_download_url: HttpUrl
     pdf_expires_at: datetime
-
-
-class CreditBalance(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    balance: float
-    action_costs: ActionCosts
 
 
 class ReviewSummary(BaseModel):
@@ -124,7 +109,6 @@ class ReviewDraft(BaseModel):
     rating: int = Field(ge=1, le=5)
     review_comment: str
     draft_text: str
-    publish_cost: float = 2.5
 
 
 class PublishedReply(BaseModel):
@@ -134,8 +118,6 @@ class PublishedReply(BaseModel):
     location_id: str
     review_id: str
     published_reply: str
-    credits_charged: float = 2.5
-    remaining_balance: float
 
 
 class ScheduledPostSummary(BaseModel):
@@ -163,8 +145,6 @@ class ScheduledPostResult(BaseModel):
     post_id: str
     location_id: str
     scheduled_for: datetime
-    credits_charged: float = 5.0
-    remaining_balance: float
 
 
 class CancelledPost(BaseModel):
@@ -172,7 +152,6 @@ class CancelledPost(BaseModel):
 
     status: Literal["cancelled"] = "cancelled"
     post_id: str
-    credits_refunded: float = 0.0
 
 
 class BusinessAccountSummary(BaseModel):
@@ -195,7 +174,8 @@ class AccountOverview(BaseModel):
     plan: str
     subscription_status: str
     subscription_expires_at: datetime | None
-    credit_balance: float
+    is_lifetime: bool = False
+    unlimited_access: bool = False
     google_account_count: int = Field(ge=0)
     location_count: int = Field(ge=0)
     automation_rule_count: int = Field(ge=0)
@@ -256,7 +236,6 @@ class CampaignDraftResult(BaseModel):
     status: Literal["draft"] = "draft"
     campaign_id: str
     location_count: int = Field(ge=1)
-    scheduling_cost: float = Field(ge=0)
 
 
 class CampaignScheduleResult(BaseModel):
@@ -266,8 +245,6 @@ class CampaignScheduleResult(BaseModel):
     campaign_id: str
     location_count: int = Field(ge=1)
     scheduled_for: datetime
-    credits_charged: float = Field(ge=0)
-    remaining_balance: float = Field(ge=0)
 
 
 class CampaignCancelResult(BaseModel):
@@ -275,7 +252,6 @@ class CampaignCancelResult(BaseModel):
 
     status: Literal["cancelled"] = "cancelled"
     campaign_id: str
-    credits_refunded: float = 0
 
 
 class ReviewReplyJobSummary(BaseModel):
@@ -290,7 +266,6 @@ class ReviewReplyJobSummary(BaseModel):
     status: Literal["draft", "pending_approval", "scheduled", "publishing", "published", "failed", "cancelled"]
     scheduled_for: datetime | None
     last_error: str | None
-    credits_charged: float = Field(ge=0)
 
 
 class ReviewReplyJobList(BaseModel):
@@ -305,7 +280,6 @@ class ReviewReplyApprovalResult(BaseModel):
     status: Literal["scheduled"] = "scheduled"
     job_id: str
     scheduled_for: datetime
-    credits_due: float = 2.5
 
 
 class ReviewReplyCancellationResult(BaseModel):
@@ -313,7 +287,6 @@ class ReviewReplyCancellationResult(BaseModel):
 
     status: Literal["cancelled"] = "cancelled"
     job_id: str
-    credits_refunded: float = 0
 
 
 class MediaAssetSummary(BaseModel):
@@ -421,7 +394,7 @@ class GBPReadService:
         subscription_rows = (
             await run_in_threadpool(
                 lambda: self.db.table("account_subscriptions")
-                .select("plan_type,status,expires_at")
+                .select("plan_type,status,expires_at,is_lifetime,access_scope,max_locations")
                 .eq("user_id", user_id)
                 .execute()
             )
@@ -430,12 +403,11 @@ class GBPReadService:
         now = datetime.now(timezone.utc)
         locations: list[LocationSummary] = []
         for row in rows:
-            expires_at = _parse_datetime((account_subscription or {}).get("expires_at") or row.get("subscription_end"))
-            plan = (account_subscription or {}).get("plan_type") or row.get("plan_type") or "free"
-            if account_subscription and account_subscription.get("status") != "active":
-                plan = "free"
-            if plan != "free" and (expires_at is None or expires_at <= now):
-                plan = "free"
+            subscription = resolve_subscription(account_subscription or {
+                'plan_type': row.get('plan_type'), 'expires_at': row.get('subscription_end'),
+            }, now=now)
+            expires_at = _parse_datetime(subscription['expires_at'])
+            plan = subscription['plan_type']
             location_id = row["location_id"]
             locations.append(
                 LocationSummary(
@@ -444,35 +416,11 @@ class GBPReadService:
                     account_id=row.get("account_id"),
                     plan=plan,
                     subscription_expires_at=expires_at,
+                    is_lifetime=subscription['is_lifetime'],
+                    unlimited_access=subscription['unlimited_access'],
                 )
             )
         return LocationList(locations=locations)
-
-    async def get_credit_balance(self, user_id: str) -> CreditBalance:
-        location_rows = (
-            await run_in_threadpool(
-                lambda: self.db.table("location_profiles")
-                .select("location_id")
-                .eq("user_id", user_id)
-                .execute()
-            )
-        ).data or []
-        for row in location_rows[:1]:
-            await run_in_threadpool(
-                lambda location_id=row["location_id"]: self.db.rpc(
-                    "refresh_monthly_tokens",
-                    {"p_location": location_id, "p_user": user_id},
-                ).execute()
-            )
-        account = (
-            await run_in_threadpool(
-                lambda: self.db.rpc("ensure_account", {"p_user": user_id}).execute()
-            )
-        ).data or {}
-        return CreditBalance(
-            balance=max(0.0, float(account.get("tokens_balance") or 0)),
-            action_costs=ActionCosts(),
-        )
 
     async def generate_local_rank_report(
         self, user_id: str, location_id: str, keyword: str, request_id: str
@@ -480,44 +428,9 @@ class GBPReadService:
         profile = await self._owned_location(user_id, location_id)
         if not re.fullmatch(r"[A-Za-z0-9_-]{8,100}", request_id):
             raise ValueError("request_id must be 8-100 letters, numbers, underscores, or hyphens")
-        operation = "rank-report:" + request_id
-        reservation = (
-            await run_in_threadpool(
-                lambda: self.db.rpc(
-                    "reserve_tokens",
-                    {
-                        "p_operation": operation,
-                        "p_location": profile["location_id"],
-                        "p_user": user_id,
-                        "p_amount": RANK_REPORT_COST,
-                    },
-                ).execute()
-            )
-        ).data or {}
-        if not reservation.get("success"):
-            raise ValueError(reservation.get("error") or "Insufficient credits")
-        try:
-            access_token = await self._google_access_token(user_id)
-            scan = await run_in_threadpool(
-                lambda: run_local_rank_scan(
-                    location_id=profile["location_id"],
-                    keyword=keyword,
-                    google_access_token=access_token,
-                )
-            )
-        except Exception:
-            await run_in_threadpool(
-                lambda: self.db.rpc(
-                    "finish_tokens", {"p_operation": operation, "p_success": False}
-                ).execute()
-            )
-            raise
-        await run_in_threadpool(
-            lambda: self.db.rpc(
-                "finish_tokens", {"p_operation": operation, "p_success": True}
-            ).execute()
-        )
-        balance = await self.get_credit_balance(user_id)
+        from report_cache import measured_report
+        scan = await measured_report(self.db, user_id, profile['location_id'], keyword, request_id,
+            lambda: self._google_access_token(user_id), run_local_rank_scan)
         signing_secret = os.getenv("RANK_REPORT_SIGNING_SECRET") or os.getenv(
             "SUPABASE_SERVICE_ROLE_KEY", ""
         )
@@ -526,7 +439,6 @@ class GBPReadService:
         api_base = resource_url[:-4] if resource_url.endswith("/mcp") else resource_url
         return LocalRankReport(
             request_id=request_id,
-            remaining_balance=balance.balance,
             pdf_download_url=f"{api_base}/api/rank/report.pdf?token={pdf_token}",
             pdf_expires_at=datetime.fromtimestamp(pdf_expires_at, timezone.utc),
             **scan,
@@ -564,22 +476,22 @@ class GBPReadService:
         ])
 
     async def get_account_overview(self, user_id: str) -> AccountOverview:
-        balance = await self.get_credit_balance(user_id)
         subscription_rows, accounts, locations, rules, campaigns = await run_in_threadpool(
             lambda: (
-                self.db.table("account_subscriptions").select("plan_type,status,expires_at").eq("user_id", user_id).execute().data or [],
+                self.db.table("account_subscriptions").select("plan_type,status,expires_at,is_lifetime,access_scope,max_locations").eq("user_id", user_id).execute().data or [],
                 self.db.table("gbp_accounts").select("resource_name").eq("user_id", user_id).execute().data or [],
                 self.db.table("location_profiles").select("location_id").eq("user_id", user_id).execute().data or [],
                 self.db.table("review_automation_rules").select("id").eq("user_id", user_id).execute().data or [],
                 self.db.table("content_campaigns").select("id").eq("user_id", user_id).eq("status", "scheduled").execute().data or [],
             )
         )
-        subscription = subscription_rows[0] if subscription_rows else {}
+        subscription = resolve_subscription(subscription_rows[0] if subscription_rows else {})
         return AccountOverview(
             plan=subscription.get("plan_type") or "free",
             subscription_status=subscription.get("status") or "active",
             subscription_expires_at=_parse_datetime(subscription.get("expires_at")),
-            credit_balance=balance.balance,
+            is_lifetime=subscription['is_lifetime'],
+            unlimited_access=subscription['unlimited_access'],
             google_account_count=len(accounts),
             location_count=len(locations),
             automation_rule_count=len(rules),
@@ -697,7 +609,6 @@ class GBPReadService:
         ).data or {}
         return CampaignDraftResult(
             campaign_id=str(result["campaign_id"]), location_count=int(result["location_count"]),
-            scheduling_cost=int(result["location_count"]) * 5,
         )
 
     async def schedule_content_campaign(
@@ -714,8 +625,7 @@ class GBPReadService:
         ).data or {}
         return CampaignScheduleResult(
             campaign_id=str(result["campaign_id"]), location_count=int(result["location_count"]),
-            scheduled_for=scheduled_for, credits_charged=float(result["credits_charged"]),
-            remaining_balance=float(result.get("balance") or 0),
+            scheduled_for=scheduled_for,
         )
 
     async def cancel_content_campaign(self, user_id: str, campaign_id: str) -> CampaignCancelResult:
@@ -730,7 +640,7 @@ class GBPReadService:
         self, user_id: str, status: str, limit: int
     ) -> ReviewReplyJobList:
         query = self.db.table("review_reply_jobs").select(
-            "id,location_id,review_name,rating,review_text,draft_text,status,scheduled_for,last_error,credits_charged"
+            "id,location_id,review_name,rating,review_text,draft_text,status,scheduled_for,last_error"
         ).eq("user_id", user_id)
         if status != "all":
             query = query.eq("status", status)
@@ -758,6 +668,7 @@ class GBPReadService:
             await run_in_threadpool(
                 lambda: self.db.table("review_reply_jobs").update({
                     "status": "scheduled", "scheduled_for": scheduled_for.isoformat(),
+                    "approval_source": "user",
                     "last_error": None, "updated_at": datetime.now(timezone.utc).isoformat(),
                 }).eq("id", job_id).eq("user_id", user_id).eq("status", current).execute()
             )
@@ -884,18 +795,17 @@ class GBPReadService:
         reservation = (
             await run_in_threadpool(
                 lambda: self.db.rpc(
-                    "reserve_tokens",
+                    "claim_operation",
                     {
                         "p_operation": operation,
                         "p_location": profile["location_id"],
                         "p_user": user_id,
-                        "p_amount": 2.5,
                     },
                 ).execute()
             )
         ).data or {}
         if not reservation.get("success"):
-            raise ValueError(reservation.get("error") or "Insufficient credits")
+            raise ValueError(reservation.get("error") or "Operation is already in progress or completed")
         try:
             response = await run_in_threadpool(
                 lambda: requests.put(
@@ -910,16 +820,15 @@ class GBPReadService:
             ) from None
         await run_in_threadpool(
             lambda: self.db.rpc(
-                "finish_tokens", {"p_operation": operation, "p_success": response.ok}
+                "finish_operation", {"p_operation": operation, "p_success": response.ok}
             ).execute()
         )
         if not response.ok:
-            raise RuntimeError("Google rejected the reply; reserved credits were refunded")
+            raise RuntimeError("Google rejected the reply")
         return PublishedReply(
             location_id=profile["location_id"],
             review_id=review_name,
             published_reply=reply,
-            remaining_balance=max(0.0, float(reservation.get("balance") or 0)),
         )
 
     async def list_scheduled_posts(
@@ -994,7 +903,6 @@ class GBPReadService:
             post_id=str(scheduled["id"]),
             location_id=profile["location_id"],
             scheduled_for=scheduled_for,
-            remaining_balance=float(scheduled.get("balance") or 0),
         )
 
     async def cancel_scheduled_post(
@@ -1039,8 +947,9 @@ class GBPReadService:
         return getattr(user, "user_metadata", None) or {}
 
     async def _google_access_token(self, user_id: str) -> str:
-        metadata = await self._user_metadata(user_id)
-        refresh_token = metadata.get("google_refresh_token")
+        from credential_store import google_refresh_grant
+        user = (await run_in_threadpool(self.db.auth.admin.get_user_by_id, user_id)).user
+        refresh_token = await run_in_threadpool(google_refresh_grant, self.db, user)
         if not isinstance(refresh_token, str) or not refresh_token:
             raise PermissionError("Reconnect Google Business Profile before using this tool")
         if self.google_token_getter is None:
@@ -1141,7 +1050,7 @@ class GBPReadService:
             review_id=row["review_name"], rating=int(row["rating"]),
             review_text=row.get("review_text") or "", draft_text=row["draft_text"],
             status=row["status"], scheduled_for=_parse_datetime(row.get("scheduled_for")),
-            last_error=row.get("last_error"), credits_charged=float(row.get("credits_charged") or 0),
+            last_error=row.get("last_error"),
         )
 
     @staticmethod
@@ -1208,7 +1117,7 @@ def create_gbp_mcp_server(
     server = MCPServer(
         name="gbp-master",
         title="GBP Master",
-        description="Manage Google Business Profile reviews, credits, and scheduled content.",
+        description="Manage Google Business Profile reviews and scheduled content.",
         instructions=SERVER_INSTRUCTIONS,
         website_url="https://gbpautomaster.in",
         version="1.1.0",
@@ -1237,28 +1146,13 @@ def create_gbp_mcp_server(
         return await read_service.list_locations(_subject())
 
     @server.tool(
-        name="get_credit_balance",
-        title="Get credit balance",
-        description=(
-            "Return the authenticated account's shared GBP Master credit balance and "
-            "the credit cost of supported write actions."
-        ),
-        annotations=ToolAnnotations(
-            readOnlyHint=True, destructiveHint=False, openWorldHint=False
-        ),
-    )
-    async def get_credit_balance() -> CreditBalance:
-        return await read_service.get_credit_balance(_subject())
-
-    @server.tool(
         name="generate_local_rank_report",
         title="Generate local Google rank report",
         description=(
             "Measure the selected connected business's actual position for one keyword "
-            "within the first 11 Google local results using SerpApi. This costs exactly "
-            "10 GBP Master credits. Before calling, show the keyword, location, and charge "
+            "within the first 11 Google local results using SerpApi. Before calling, show the keyword and location "
             "and obtain explicit user confirmation. Supply a new request_id and reuse it "
-            "if retrying the same confirmed scan so the account cannot be charged twice. "
+            "if retrying the same confirmed scan to prevent duplicate provider requests. "
             "The result includes a temporary downloadable PDF link at no additional charge."
         ),
         annotations=ToolAnnotations(
@@ -1289,7 +1183,7 @@ def create_gbp_mcp_server(
     @server.tool(
         name="get_account_overview",
         title="Get GBP Master account overview",
-        description="Return the account plan, shared credits, connected account and location totals, review automation count, and scheduled campaign count.",
+        description="Return the account plan, connected account and location totals, review automation count, and scheduled campaign count.",
         annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
     )
     async def get_account_overview() -> AccountOverview:
@@ -1298,7 +1192,7 @@ def create_gbp_mcp_server(
     @server.tool(
         name="list_review_automation_rules",
         title="List automatic review reply rules",
-        description="List account-default and location-specific review reply automation rules. This read-only action costs no credits.",
+        description="List account-default and location-specific review reply automation rules. This is a read-only action.",
         annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
     )
     async def list_review_automation_rules() -> AutomationRuleList:
@@ -1336,7 +1230,7 @@ def create_gbp_mcp_server(
     @server.tool(
         name="list_content_campaigns",
         title="List content calendar campaigns",
-        description="List account-level campaigns and every targeted GBP location. This read-only action costs no credits.",
+        description="List account-level campaigns and every targeted GBP location. This is a read-only action.",
         annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
     )
     async def list_content_campaigns(
@@ -1350,7 +1244,7 @@ def create_gbp_mcp_server(
         title="Create a multi-location content draft",
         description=(
             "Create a free draft for one or more owned locations. This does not schedule, "
-            "publish or spend credits. EVENT and OFFER drafts require an event title and times."
+            "publish. EVENT and OFFER drafts require an event title and times."
         ),
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False),
     )
@@ -1392,8 +1286,8 @@ def create_gbp_mcp_server(
         name="schedule_content_campaign",
         title="Schedule a multi-location content campaign",
         description=(
-            "Schedule an existing approved draft. The charge is 5 credits per target location. "
-            "Call only after showing the complete campaign, every location, exact time and total charge."
+            "Schedule an existing approved draft.  "
+            "Call only after showing the complete campaign, every location and exact time, and obtaining confirmation."
         ),
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True),
     )
@@ -1406,7 +1300,7 @@ def create_gbp_mcp_server(
     @server.tool(
         name="cancel_content_campaign",
         title="Cancel an unpublished content campaign",
-        description="Cancel a draft or scheduled campaign after explicit confirmation. Scheduling credits are not refunded.",
+        description="Cancel a draft or scheduled campaign after explicit confirmation. ",
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
     )
     async def cancel_content_campaign(
@@ -1419,7 +1313,7 @@ def create_gbp_mcp_server(
         title="List AI review reply jobs",
         description=(
             "List generated review reply drafts, approvals, scheduled replies and delivery results. "
-            "This read-only action costs no credits."
+            "This is a read-only action."
         ),
         annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
     )
@@ -1434,8 +1328,8 @@ def create_gbp_mcp_server(
         title="Approve an AI review reply",
         description=(
             "Approve the exact stored reply text for publication now or at a supplied time. "
-            "Publishing costs 2.5 credits. Call only after showing the user the draft, target "
-            "review, publication time and charge."
+            "Call only after showing the user the draft, target "
+            "review and publication time, and obtaining confirmation."
         ),
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True),
     )
@@ -1448,7 +1342,7 @@ def create_gbp_mcp_server(
     @server.tool(
         name="cancel_review_reply_job",
         title="Cancel an AI review reply",
-        description="Cancel a draft, pending, scheduled or failed review reply. No credits are refunded.",
+        description="Cancel a draft, pending, scheduled or failed review reply. ",
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
     )
     async def cancel_review_reply_job(
@@ -1476,7 +1370,7 @@ def create_gbp_mcp_server(
         title="List customer reviews",
         description=(
             "List reviews for one owned Google Business Profile location. Filter by "
-            "whether a review has a reply. This read-only action costs no credits."
+            "whether a review has a reply. This is a read-only action."
         ),
         annotations=ToolAnnotations(
             readOnlyHint=True, destructiveHint=False, openWorldHint=True
@@ -1497,7 +1391,7 @@ def create_gbp_mcp_server(
         title="Draft a review reply",
         description=(
             "Draft a reply for one unanswered review using the location's saved tone, "
-            "keywords, and instructions. This does not publish or spend credits."
+            "keywords, and instructions. This does not publish."
         ),
         annotations=ToolAnnotations(
             readOnlyHint=True, destructiveHint=False, openWorldHint=True
@@ -1514,8 +1408,7 @@ def create_gbp_mcp_server(
         title="Publish a review reply",
         description=(
             "Publish the exact supplied reply publicly on Google. Call only after the "
-            "user has reviewed and explicitly confirmed the reply and the 2.5-credit "
-            "charge."
+            "user has reviewed and explicitly confirmed the reply and target review."
         ),
         annotations=ToolAnnotations(
             readOnlyHint=False,
@@ -1537,8 +1430,7 @@ def create_gbp_mcp_server(
         name="list_scheduled_posts",
         title="List scheduled posts",
         description=(
-            "List calendar posts for one owned location. This read-only action costs "
-            "no credits."
+            "List calendar posts for one owned location. This is a read-only action."
         ),
         annotations=ToolAnnotations(
             readOnlyHint=True, destructiveHint=False, openWorldHint=False
@@ -1561,7 +1453,7 @@ def create_gbp_mcp_server(
         description=(
             "Schedule an approved text, photo, or video item for Google publication. "
             "Call only after the user explicitly confirms the location, content, exact "
-            "time, and 5-credit charge. Media must use a durable public HTTPS URL."
+            "time. Media must use a durable public HTTPS URL."
         ),
         annotations=ToolAnnotations(
             readOnlyHint=False,
@@ -1586,7 +1478,7 @@ def create_gbp_mcp_server(
         title="Cancel a scheduled post",
         description=(
             "Permanently remove one pending scheduled post. Call only after the user "
-            "explicitly confirms cancellation. The original 5-credit charge is not refunded."
+            "explicitly confirms cancellation. "
         ),
         annotations=ToolAnnotations(
             readOnlyHint=False,

@@ -5,7 +5,6 @@ import pytest
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-import billing
 from security import authorize, normalize_location
 
 
@@ -88,53 +87,3 @@ def test_canonical_locations(value):
 @pytest.mark.parametrize('value',['../123','locations/123?x=1','https://evil.test/123',''])
 def test_invalid_location(value):
     with pytest.raises(HTTPException): normalize_location(value)
-
-
-@pytest.fixture
-def purchase():
-    db, gateway = MagicMock(), MagicMock()
-    row = {'order_id':'order_1','user_id':'owner','location_id':'locations/123','kind':'subscription','product_id':'monthly','amount':50000}
-    db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data=[row]
-    gateway.payment.fetch.return_value={'id':'payment_1','order_id':'order_1','amount':50000,'currency':'INR','status':'captured'}
-    db.rpc.return_value.execute.return_value.data={'status':'success'}
-    req=SimpleNamespace(razorpay_order_id='order_1',razorpay_payment_id='payment_1',razorpay_signature='signature',user_id='owner',location_id='locations/123',plan_id='monthly')
-    return db,gateway,req
-
-
-@pytest.mark.parametrize('field,value',[('plan_id','yearly'),('location_id','locations/999')])
-def test_purchase_tampering_rejected(purchase,field,value):
-    db,gateway,req=purchase
-    setattr(req,field,value)
-    with pytest.raises(HTTPException): billing.verify_order(db,gateway,req,'subscription')
-    db.rpc.assert_not_called()
-
-
-@pytest.mark.parametrize('field,value',[('amount',1),('currency','USD'),('status','authorized'),('order_id','other')])
-def test_payment_must_be_captured_for_correct_order_and_amount(purchase,field,value):
-    db,gateway,req=purchase
-    gateway.payment.fetch.return_value[field]=value
-    with pytest.raises(HTTPException): billing.verify_order(db,gateway,req,'subscription')
-    db.rpc.assert_not_called()
-
-
-def test_payment_uses_transactional_settlement(purchase):
-    db,gateway,req=purchase
-    assert billing.verify_order(db,gateway,req,'subscription')['status']=='success'
-    db.rpc.assert_called_once_with('settle_order',{'p_order':'order_1','p_payment':'payment_1','p_user':'owner'})
-    gateway.utility.verify_payment_signature.assert_called_once()
-
-
-def test_promo_disabled_without_configuration(monkeypatch):
-    monkeypatch.delenv('PROMO_CODE',raising=False)
-    assert not billing.promo_valid('ATYAUNSUHJ')
-
-
-def test_repeat_promo_rejected(monkeypatch):
-    monkeypatch.setenv('PROMO_CODE','test-code')
-    db,gateway=MagicMock(),MagicMock()
-    db.table.return_value.select.return_value.eq.return_value.execute.return_value.data=[{'order_id':'previous'}]
-    with pytest.raises(HTTPException) as error:
-        billing.create_order(db,gateway,'owner','locations/123','topup','standard',{'price':500,'tokens':450},'test-code')
-    assert error.value.status_code==409
-    db.rpc.assert_not_called()
-    gateway.order.create.assert_not_called()

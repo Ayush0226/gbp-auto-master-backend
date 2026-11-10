@@ -15,7 +15,6 @@ def test_v1_tool_surface_is_stable_and_unique():
 
     assert names == [
         "list_locations",
-        "get_credit_balance",
         "list_reviews",
         "draft_review_reply",
         "publish_review_reply",
@@ -54,14 +53,15 @@ def test_annotations_and_confirmation_match_side_effects():
         }
         if annotations["readOnlyHint"]:
             assert tool["confirmation"] == "never"
-            assert tool["creditCost"] == 0
+            assert "creditCost" not in tool
         else:
             assert tool["confirmation"] == "always"
 
 
-def test_credit_costs_match_current_billing_rules():
-    tools = {tool["name"]: tool for tool in load_contract()["tools"]}
-
-    assert tools["publish_review_reply"]["creditCost"] == 2.5
-    assert tools["schedule_post"]["creditCost"] == 5
-    assert tools["cancel_scheduled_post"]["creditCost"] == 0
+def test_usage_credit_surface_has_been_removed():
+    contract = load_contract()
+    assert 'get_credit_balance' not in {tool['name'] for tool in contract['tools']}
+    for tool in contract['tools']:
+        assert 'creditCost' not in tool
+        fields = tool['outputSchema'].get('properties', {})
+        assert not ({'credits_charged', 'remaining_balance', 'credits_refunded'} & fields.keys())

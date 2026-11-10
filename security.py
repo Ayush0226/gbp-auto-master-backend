@@ -2,11 +2,13 @@
 import hmac
 import os
 import re
+import httpx
 
 from fastapi import HTTPException, Request
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
 from starlette.concurrency import run_in_threadpool
+from job_control import track_job
 
 
 def normalize_location(value: str) -> str:
@@ -20,6 +22,7 @@ async def authorize(request: Request):
     path = request.url.path
     if path in {
         "/api/health",
+        "/api/ready",
         "/api/payment/key",
         "/.well-known/oauth-protected-resource",
         "/.well-known/oauth-protected-resource/mcp",
@@ -59,13 +62,18 @@ async def authorize(request: Request):
         user = result.user
         if not user:
             raise ValueError("No user")
+    except httpx.TransportError:
+        raise HTTPException(503, "Sign-in verification is temporarily unavailable; please retry") from None
     except Exception:
         raise HTTPException(401, "Session expired; sign in again") from None
     request.state.user = user
     admin = (user.app_metadata or {}).get("role") == "admin"
     if (path.startswith("/api/admin/") or path == '/api/google/draft-reviews') and not admin:
         raise HTTPException(403, "Administrator access required")
-    body = await request.json() if request.method == "POST" else {}
+    try:
+        body = await request.json() if request.method in {"POST", "PUT", "PATCH"} else {}
+    except ValueError:
+        raise HTTPException(422, 'Expected a valid JSON object') from None
     if not isinstance(body, dict):
         raise HTTPException(422, 'Expected a JSON object')
     for key in ("user_id", "target_user_id"):
@@ -86,24 +94,3 @@ async def authorize(request: Request):
             raise HTTPException(409, "Reconnect Google locations before continuing")
         if rows.data[0]["user_id"] != user.id and not admin:
             raise HTTPException(403, "You do not own this location")
-
-
-async def track_job(request: Request):
-    """Prevent overlapping cron calls and retain a server-side run result."""
-    if not request.url.path.startswith('/api/cron/'):
-        yield
-        return
-    db = request.app.state.db
-    if db is None:
-        raise HTTPException(503, 'Database is not configured')
-    key = request.url.path
-    claimed = await run_in_threadpool(lambda: db.rpc('claim_job', {'p_key': key}).execute().data)
-    if not claimed:
-        raise HTTPException(409, 'This job is already running; inspect job_runs if a previous worker stopped')
-    try:
-        yield
-    except Exception:
-        await run_in_threadpool(lambda: db.table('job_runs').update({'status': 'failed', 'detail': 'Job failed; inspect server logs'}).eq('job_key', key).execute())
-        raise
-    else:
-        await run_in_threadpool(lambda: db.table('job_runs').update({'status': 'completed', 'detail': None}).eq('job_key', key).execute())

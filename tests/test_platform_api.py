@@ -54,7 +54,7 @@ class FakeDB:
         self.rpc_calls = []
         self.rpc_results = {
             "create_content_campaign": {"status": "draft", "campaign_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "location_count": 2},
-            "schedule_content_campaign": {"status": "scheduled", "credits_charged": 10},
+            "schedule_content_campaign": {"status": "scheduled"},
         }
     def table(self, name): return FakeQuery(self, name)
     def rpc(self, name, params): return FakeRpc(self, name, params)
@@ -133,7 +133,7 @@ def test_campaign_schedule_passes_authenticated_owner(client):
         json={"publish_at": publish_at},
     )
     assert response.status_code == 200
-    assert response.json()["credits_charged"] == 10
+    assert "credits_charged" not in response.json()
     assert db.rpc_calls[-1][1]["p_user"] == "owner"
 
 
@@ -147,7 +147,7 @@ def test_review_reply_approval_is_owner_scoped(client):
     response = http.post(f"/api/platform/review-jobs/{job_id}/approve", json={"publish_at": None})
     assert response.status_code == 200
     assert response.json()["status"] == "scheduled"
-    assert response.json()["credits_due"] == 2.5
+    assert "credits_due" not in response.json()
 
 
 def test_review_reply_approval_hides_another_accounts_job(client):

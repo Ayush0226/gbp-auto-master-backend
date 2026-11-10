@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "gbp-master": {
+      "url": "https://gbp-auto-master-backend-us.onrender.com/mcp"
+    }
+  }
+}

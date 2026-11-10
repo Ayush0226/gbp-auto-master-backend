@@ -1,0 +1,2124 @@
+{
+  "schema_version": "3.0.0",
+  "source": "registered runtime tool schemas",
+  "usage_credits": false,
+  "tools": [
+    {
+      "name": "list_locations",
+      "description": "List Google Business Profile locations owned by the authenticated GBP Master account. Use this before a location-scoped tool.",
+      "inputSchema": {
+        "properties": {},
+        "title": "list_locationsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "LocationSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "location_id": {
+                "title": "Location Id",
+                "type": "string"
+              },
+              "name": {
+                "title": "Name",
+                "type": "string"
+              },
+              "account_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Account Id"
+              },
+              "plan": {
+                "title": "Plan",
+                "type": "string"
+              },
+              "subscription_expires_at": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Subscription Expires At"
+              },
+              "is_lifetime": {
+                "default": false,
+                "title": "Is Lifetime",
+                "type": "boolean"
+              },
+              "unlimited_access": {
+                "default": false,
+                "title": "Unlimited Access",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "location_id",
+              "name",
+              "plan",
+              "subscription_expires_at"
+            ],
+            "title": "LocationSummary",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "locations": {
+            "items": {
+              "$ref": "#/$defs/LocationSummary"
+            },
+            "title": "Locations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "locations"
+        ],
+        "title": "LocationList",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "generate_local_rank_report",
+      "description": "Measure the selected connected business's actual position for one keyword within the first 11 Google local results using SerpApi. Before calling, show the keyword and location and obtain explicit user confirmation. Supply a new request_id and reuse it if retrying the same confirmed scan to prevent duplicate provider requests. The result includes a temporary downloadable PDF link at no additional charge.",
+      "inputSchema": {
+        "properties": {
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "keyword": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Keyword",
+            "type": "string"
+          },
+          "request_id": {
+            "maxLength": 100,
+            "minLength": 8,
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "location_id",
+          "keyword",
+          "request_id"
+        ],
+        "title": "generate_local_rank_reportArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "LocalRankResult": {
+            "additionalProperties": false,
+            "properties": {
+              "position": {
+                "maximum": 11,
+                "minimum": 1,
+                "title": "Position",
+                "type": "integer"
+              },
+              "business_name": {
+                "title": "Business Name",
+                "type": "string"
+              },
+              "rating": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Rating"
+              },
+              "reviews": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Reviews"
+              },
+              "address": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Address"
+              },
+              "place_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Place Id"
+              },
+              "is_target": {
+                "title": "Is Target",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "position",
+              "business_name",
+              "rating",
+              "reviews",
+              "address",
+              "place_id",
+              "is_target"
+            ],
+            "title": "LocalRankResult",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "const": "success",
+            "default": "success",
+            "title": "Status",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "keyword": {
+            "title": "Keyword",
+            "type": "string"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "search_area": {
+            "title": "Search Area",
+            "type": "string"
+          },
+          "target_business": {
+            "title": "Target Business",
+            "type": "string"
+          },
+          "actual_rank": {
+            "anyOf": [
+              {
+                "maximum": 11,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Actual Rank"
+          },
+          "found_in_top_11": {
+            "title": "Found In Top 11",
+            "type": "boolean"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/$defs/LocalRankResult"
+            },
+            "title": "Results",
+            "type": "array"
+          },
+          "pdf_download_url": {
+            "format": "uri",
+            "maxLength": 2083,
+            "minLength": 1,
+            "title": "Pdf Download Url",
+            "type": "string"
+          },
+          "pdf_expires_at": {
+            "format": "date-time",
+            "title": "Pdf Expires At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "keyword",
+          "location_id",
+          "search_area",
+          "target_business",
+          "found_in_top_11",
+          "results",
+          "pdf_download_url",
+          "pdf_expires_at"
+        ],
+        "title": "LocalRankReport",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "list_business_accounts",
+      "description": "List the authenticated user's Google Business Profile accounts and location counts.",
+      "inputSchema": {
+        "properties": {},
+        "title": "list_business_accountsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "BusinessAccountSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "account_id": {
+                "title": "Account Id",
+                "type": "string"
+              },
+              "name": {
+                "title": "Name",
+                "type": "string"
+              },
+              "location_count": {
+                "minimum": 0,
+                "title": "Location Count",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "account_id",
+              "name",
+              "location_count"
+            ],
+            "title": "BusinessAccountSummary",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "accounts": {
+            "items": {
+              "$ref": "#/$defs/BusinessAccountSummary"
+            },
+            "title": "Accounts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "accounts"
+        ],
+        "title": "BusinessAccountList",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_account_overview",
+      "description": "Return the account plan, connected account and location totals, review automation count, and scheduled campaign count.",
+      "inputSchema": {
+        "properties": {},
+        "title": "get_account_overviewArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "plan": {
+            "title": "Plan",
+            "type": "string"
+          },
+          "subscription_status": {
+            "title": "Subscription Status",
+            "type": "string"
+          },
+          "subscription_expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subscription Expires At"
+          },
+          "is_lifetime": {
+            "default": false,
+            "title": "Is Lifetime",
+            "type": "boolean"
+          },
+          "unlimited_access": {
+            "default": false,
+            "title": "Unlimited Access",
+            "type": "boolean"
+          },
+          "google_account_count": {
+            "minimum": 0,
+            "title": "Google Account Count",
+            "type": "integer"
+          },
+          "location_count": {
+            "minimum": 0,
+            "title": "Location Count",
+            "type": "integer"
+          },
+          "automation_rule_count": {
+            "minimum": 0,
+            "title": "Automation Rule Count",
+            "type": "integer"
+          },
+          "scheduled_campaign_count": {
+            "minimum": 0,
+            "title": "Scheduled Campaign Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "plan",
+          "subscription_status",
+          "subscription_expires_at",
+          "google_account_count",
+          "location_count",
+          "automation_rule_count",
+          "scheduled_campaign_count"
+        ],
+        "title": "AccountOverview",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_review_automation_rules",
+      "description": "List account-default and location-specific review reply automation rules. This is a read-only action.",
+      "inputSchema": {
+        "properties": {},
+        "title": "list_review_automation_rulesArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "AutomationRuleSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "rule_id": {
+                "title": "Rule Id",
+                "type": "string"
+              },
+              "name": {
+                "title": "Name",
+                "type": "string"
+              },
+              "location_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Location Id"
+              },
+              "enabled": {
+                "title": "Enabled",
+                "type": "boolean"
+              },
+              "mode": {
+                "enum": [
+                  "draft",
+                  "approval",
+                  "auto_publish"
+                ],
+                "title": "Mode",
+                "type": "string"
+              },
+              "min_rating": {
+                "maximum": 5,
+                "minimum": 1,
+                "title": "Min Rating",
+                "type": "integer"
+              },
+              "max_rating": {
+                "maximum": 5,
+                "minimum": 1,
+                "title": "Max Rating",
+                "type": "integer"
+              },
+              "tone": {
+                "title": "Tone",
+                "type": "string"
+              },
+              "language": {
+                "title": "Language",
+                "type": "string"
+              },
+              "delay_minutes": {
+                "minimum": 0,
+                "title": "Delay Minutes",
+                "type": "integer"
+              },
+              "daily_limit": {
+                "minimum": 1,
+                "title": "Daily Limit",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "rule_id",
+              "name",
+              "location_id",
+              "enabled",
+              "mode",
+              "min_rating",
+              "max_rating",
+              "tone",
+              "language",
+              "delay_minutes",
+              "daily_limit"
+            ],
+            "title": "AutomationRuleSummary",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "rules": {
+            "items": {
+              "$ref": "#/$defs/AutomationRuleSummary"
+            },
+            "title": "Rules",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rules"
+        ],
+        "title": "AutomationRuleList",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "configure_review_automation_rule",
+      "description": "Create or replace the account-default rule or one location override. Enabling auto_publish authorizes future public Google replies, so call only after the user confirms the target, rating range, instructions, limits and publishing mode.",
+      "inputSchema": {
+        "properties": {
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "location_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Location Id"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "mode": {
+            "default": "draft",
+            "enum": [
+              "draft",
+              "approval",
+              "auto_publish"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "min_rating": {
+            "default": 4,
+            "maximum": 5,
+            "minimum": 1,
+            "title": "Min Rating",
+            "type": "integer"
+          },
+          "max_rating": {
+            "default": 5,
+            "maximum": 5,
+            "minimum": 1,
+            "title": "Max Rating",
+            "type": "integer"
+          },
+          "tone": {
+            "default": "friendly professional",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Tone",
+            "type": "string"
+          },
+          "language": {
+            "default": "auto",
+            "maxLength": 20,
+            "minLength": 2,
+            "title": "Language",
+            "type": "string"
+          },
+          "delay_minutes": {
+            "default": 0,
+            "maximum": 10080,
+            "minimum": 0,
+            "title": "Delay Minutes",
+            "type": "integer"
+          },
+          "daily_limit": {
+            "default": 20,
+            "maximum": 500,
+            "minimum": 1,
+            "title": "Daily Limit",
+            "type": "integer"
+          },
+          "custom_instructions": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Custom Instructions",
+            "type": "string"
+          },
+          "blocked_terms": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Blocked Terms",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "configure_review_automation_ruleArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "AutomationRuleSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "rule_id": {
+                "title": "Rule Id",
+                "type": "string"
+              },
+              "name": {
+                "title": "Name",
+                "type": "string"
+              },
+              "location_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Location Id"
+              },
+              "enabled": {
+                "title": "Enabled",
+                "type": "boolean"
+              },
+              "mode": {
+                "enum": [
+                  "draft",
+                  "approval",
+                  "auto_publish"
+                ],
+                "title": "Mode",
+                "type": "string"
+              },
+              "min_rating": {
+                "maximum": 5,
+                "minimum": 1,
+                "title": "Min Rating",
+                "type": "integer"
+              },
+              "max_rating": {
+                "maximum": 5,
+                "minimum": 1,
+                "title": "Max Rating",
+                "type": "integer"
+              },
+              "tone": {
+                "title": "Tone",
+                "type": "string"
+              },
+              "language": {
+                "title": "Language",
+                "type": "string"
+              },
+              "delay_minutes": {
+                "minimum": 0,
+                "title": "Delay Minutes",
+                "type": "integer"
+              },
+              "daily_limit": {
+                "minimum": 1,
+                "title": "Daily Limit",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "rule_id",
+              "name",
+              "location_id",
+              "enabled",
+              "mode",
+              "min_rating",
+              "max_rating",
+              "tone",
+              "language",
+              "delay_minutes",
+              "daily_limit"
+            ],
+            "title": "AutomationRuleSummary",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "const": "saved",
+            "default": "saved",
+            "title": "Status",
+            "type": "string"
+          },
+          "rule": {
+            "$ref": "#/$defs/AutomationRuleSummary"
+          }
+        },
+        "required": [
+          "rule"
+        ],
+        "title": "AutomationRuleResult",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_content_campaigns",
+      "description": "List account-level campaigns and every targeted GBP location. This is a read-only action.",
+      "inputSchema": {
+        "properties": {
+          "status": {
+            "default": "all",
+            "enum": [
+              "all",
+              "draft",
+              "awaiting_approval",
+              "scheduled",
+              "processing",
+              "partially_published",
+              "published",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "list_content_campaignsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "CampaignSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "campaign_id": {
+                "title": "Campaign Id",
+                "type": "string"
+              },
+              "title": {
+                "title": "Title",
+                "type": "string"
+              },
+              "topic_type": {
+                "enum": [
+                  "STANDARD",
+                  "EVENT",
+                  "OFFER"
+                ],
+                "title": "Topic Type",
+                "type": "string"
+              },
+              "summary": {
+                "title": "Summary",
+                "type": "string"
+              },
+              "timezone": {
+                "title": "Timezone",
+                "type": "string"
+              },
+              "status": {
+                "title": "Status",
+                "type": "string"
+              },
+              "scheduled_for": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Scheduled For"
+              },
+              "location_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Location Ids",
+                "type": "array"
+              }
+            },
+            "required": [
+              "campaign_id",
+              "title",
+              "topic_type",
+              "summary",
+              "timezone",
+              "status",
+              "scheduled_for",
+              "location_ids"
+            ],
+            "title": "CampaignSummary",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "campaigns": {
+            "items": {
+              "$ref": "#/$defs/CampaignSummary"
+            },
+            "title": "Campaigns",
+            "type": "array"
+          }
+        },
+        "required": [
+          "campaigns"
+        ],
+        "title": "CampaignList",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "create_content_campaign",
+      "description": "Create a free draft for one or more owned locations. This does not schedule, publish. EVENT and OFFER drafts require an event title and times.",
+      "inputSchema": {
+        "properties": {
+          "title": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "topic_type": {
+            "default": "STANDARD",
+            "enum": [
+              "STANDARD",
+              "EVENT",
+              "OFFER"
+            ],
+            "title": "Topic Type",
+            "type": "string"
+          },
+          "summary": {
+            "default": "",
+            "maxLength": 1500,
+            "title": "Summary",
+            "type": "string"
+          },
+          "location_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Location Ids",
+            "type": "array"
+          },
+          "timezone_name": {
+            "default": "Asia/Kolkata",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Timezone Name",
+            "type": "string"
+          },
+          "call_to_action_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "BOOK",
+                  "ORDER",
+                  "SHOP",
+                  "LEARN_MORE",
+                  "SIGN_UP",
+                  "CALL"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Call To Action Type"
+          },
+          "call_to_action_url": {
+            "anyOf": [
+              {
+                "format": "uri",
+                "maxLength": 2083,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Call To Action Url"
+          },
+          "event_title": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Event Title"
+          },
+          "event_start": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Event Start"
+          },
+          "event_end": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Event End"
+          },
+          "coupon_code": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Coupon Code"
+          },
+          "offer_terms": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Offer Terms"
+          },
+          "media_asset_id": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Media Asset Id"
+          }
+        },
+        "required": [
+          "title",
+          "location_ids"
+        ],
+        "title": "create_content_campaignArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "const": "draft",
+            "default": "draft",
+            "title": "Status",
+            "type": "string"
+          },
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "location_count": {
+            "minimum": 1,
+            "title": "Location Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "location_count"
+        ],
+        "title": "CampaignDraftResult",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "schedule_content_campaign",
+      "description": "Schedule an existing approved draft.  Call only after showing the complete campaign, every location and exact time, and obtaining confirmation.",
+      "inputSchema": {
+        "properties": {
+          "campaign_id": {
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "publish_at": {
+            "format": "date-time",
+            "title": "Publish At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "publish_at"
+        ],
+        "title": "schedule_content_campaignArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "const": "scheduled",
+            "default": "scheduled",
+            "title": "Status",
+            "type": "string"
+          },
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "location_count": {
+            "minimum": 1,
+            "title": "Location Count",
+            "type": "integer"
+          },
+          "scheduled_for": {
+            "format": "date-time",
+            "title": "Scheduled For",
+            "type": "string"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "location_count",
+          "scheduled_for"
+        ],
+        "title": "CampaignScheduleResult",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "cancel_content_campaign",
+      "description": "Cancel a draft or scheduled campaign after explicit confirmation. ",
+      "inputSchema": {
+        "properties": {
+          "campaign_id": {
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Campaign Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "campaign_id"
+        ],
+        "title": "cancel_content_campaignArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "const": "cancelled",
+            "default": "cancelled",
+            "title": "Status",
+            "type": "string"
+          },
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "campaign_id"
+        ],
+        "title": "CampaignCancelResult",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_review_reply_jobs",
+      "description": "List generated review reply drafts, approvals, scheduled replies and delivery results. This is a read-only action.",
+      "inputSchema": {
+        "properties": {
+          "status": {
+            "default": "all",
+            "enum": [
+              "all",
+              "draft",
+              "pending_approval",
+              "scheduled",
+              "publishing",
+              "published",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "list_review_reply_jobsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ReviewReplyJobSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "job_id": {
+                "title": "Job Id",
+                "type": "string"
+              },
+              "location_id": {
+                "title": "Location Id",
+                "type": "string"
+              },
+              "review_id": {
+                "title": "Review Id",
+                "type": "string"
+              },
+              "rating": {
+                "maximum": 5,
+                "minimum": 1,
+                "title": "Rating",
+                "type": "integer"
+              },
+              "review_text": {
+                "title": "Review Text",
+                "type": "string"
+              },
+              "draft_text": {
+                "title": "Draft Text",
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "draft",
+                  "pending_approval",
+                  "scheduled",
+                  "publishing",
+                  "published",
+                  "failed",
+                  "cancelled"
+                ],
+                "title": "Status",
+                "type": "string"
+              },
+              "scheduled_for": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Scheduled For"
+              },
+              "last_error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Last Error"
+              }
+            },
+            "required": [
+              "job_id",
+              "location_id",
+              "review_id",
+              "rating",
+              "review_text",
+              "draft_text",
+              "status",
+              "scheduled_for",
+              "last_error"
+            ],
+            "title": "ReviewReplyJobSummary",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "jobs": {
+            "items": {
+              "$ref": "#/$defs/ReviewReplyJobSummary"
+            },
+            "title": "Jobs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "jobs"
+        ],
+        "title": "ReviewReplyJobList",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "approve_review_reply_job",
+      "description": "Approve the exact stored reply text for publication now or at a supplied time. Call only after showing the user the draft, target review and publication time, and obtaining confirmation.",
+      "inputSchema": {
+        "properties": {
+          "job_id": {
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Job Id",
+            "type": "string"
+          },
+          "publish_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Publish At"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "title": "approve_review_reply_jobArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "const": "scheduled",
+            "default": "scheduled",
+            "title": "Status",
+            "type": "string"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "scheduled_for": {
+            "format": "date-time",
+            "title": "Scheduled For",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "scheduled_for"
+        ],
+        "title": "ReviewReplyApprovalResult",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "cancel_review_reply_job",
+      "description": "Cancel a draft, pending, scheduled or failed review reply. ",
+      "inputSchema": {
+        "properties": {
+          "job_id": {
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Job Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "title": "cancel_review_reply_jobArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "const": "cancelled",
+            "default": "cancelled",
+            "title": "Status",
+            "type": "string"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "title": "ReviewReplyCancellationResult",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_media_assets",
+      "description": "List reusable photos and videos already uploaded to the authenticated account's media library. Use an asset ID when creating a content campaign.",
+      "inputSchema": {
+        "properties": {
+          "media_kind": {
+            "default": "all",
+            "enum": [
+              "all",
+              "photo",
+              "video"
+            ],
+            "title": "Media Kind",
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "list_media_assetsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "MediaAssetSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "asset_id": {
+                "title": "Asset Id",
+                "type": "string"
+              },
+              "media_kind": {
+                "enum": [
+                  "photo",
+                  "video"
+                ],
+                "title": "Media Kind",
+                "type": "string"
+              },
+              "mime_type": {
+                "title": "Mime Type",
+                "type": "string"
+              },
+              "public_url": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Public Url"
+              },
+              "status": {
+                "title": "Status",
+                "type": "string"
+              },
+              "created_at": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Created At"
+              }
+            },
+            "required": [
+              "asset_id",
+              "media_kind",
+              "mime_type",
+              "public_url",
+              "status",
+              "created_at"
+            ],
+            "title": "MediaAssetSummary",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "assets": {
+            "items": {
+              "$ref": "#/$defs/MediaAssetSummary"
+            },
+            "title": "Assets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "assets"
+        ],
+        "title": "MediaAssetList",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_reviews",
+      "description": "List reviews for one owned Google Business Profile location. Filter by whether a review has a reply. This is a read-only action.",
+      "inputSchema": {
+        "properties": {
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "reply_status": {
+            "default": "all",
+            "enum": [
+              "all",
+              "unanswered",
+              "answered"
+            ],
+            "title": "Reply Status",
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 50,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "page_token": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Page Token"
+          }
+        },
+        "required": [
+          "location_id"
+        ],
+        "title": "list_reviewsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ReviewSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "review_id": {
+                "title": "Review Id",
+                "type": "string"
+              },
+              "reviewer_name": {
+                "title": "Reviewer Name",
+                "type": "string"
+              },
+              "rating": {
+                "maximum": 5,
+                "minimum": 1,
+                "title": "Rating",
+                "type": "integer"
+              },
+              "comment": {
+                "title": "Comment",
+                "type": "string"
+              },
+              "created_at": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Created At"
+              },
+              "has_reply": {
+                "title": "Has Reply",
+                "type": "boolean"
+              },
+              "reply_text": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Reply Text"
+              }
+            },
+            "required": [
+              "review_id",
+              "reviewer_name",
+              "rating",
+              "comment",
+              "created_at",
+              "has_reply",
+              "reply_text"
+            ],
+            "title": "ReviewSummary",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "reviews": {
+            "items": {
+              "$ref": "#/$defs/ReviewSummary"
+            },
+            "title": "Reviews",
+            "type": "array"
+          },
+          "next_page_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Page Token"
+          },
+          "total_review_count": {
+            "minimum": 0,
+            "title": "Total Review Count",
+            "type": "integer"
+          },
+          "average_rating": {
+            "maximum": 5,
+            "minimum": 0,
+            "title": "Average Rating",
+            "type": "number"
+          }
+        },
+        "required": [
+          "location_id",
+          "reviews",
+          "next_page_token",
+          "total_review_count",
+          "average_rating"
+        ],
+        "title": "ReviewList",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "draft_review_reply",
+      "description": "Draft a reply for one unanswered review using the location's saved tone, keywords, and instructions. This does not publish.",
+      "inputSchema": {
+        "properties": {
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "review_id": {
+            "maxLength": 500,
+            "title": "Review Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "location_id",
+          "review_id"
+        ],
+        "title": "draft_review_replyArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "review_id": {
+            "title": "Review Id",
+            "type": "string"
+          },
+          "reviewer_name": {
+            "title": "Reviewer Name",
+            "type": "string"
+          },
+          "rating": {
+            "maximum": 5,
+            "minimum": 1,
+            "title": "Rating",
+            "type": "integer"
+          },
+          "review_comment": {
+            "title": "Review Comment",
+            "type": "string"
+          },
+          "draft_text": {
+            "title": "Draft Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "location_id",
+          "review_id",
+          "reviewer_name",
+          "rating",
+          "review_comment",
+          "draft_text"
+        ],
+        "title": "ReviewDraft",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "publish_review_reply",
+      "description": "Publish the exact supplied reply publicly on Google. Call only after the user has reviewed and explicitly confirmed the reply and target review.",
+      "inputSchema": {
+        "properties": {
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "review_id": {
+            "maxLength": 500,
+            "title": "Review Id",
+            "type": "string"
+          },
+          "reply_text": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Reply Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "location_id",
+          "review_id",
+          "reply_text"
+        ],
+        "title": "publish_review_replyArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "const": "published",
+            "default": "published",
+            "title": "Status",
+            "type": "string"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "review_id": {
+            "title": "Review Id",
+            "type": "string"
+          },
+          "published_reply": {
+            "title": "Published Reply",
+            "type": "string"
+          }
+        },
+        "required": [
+          "location_id",
+          "review_id",
+          "published_reply"
+        ],
+        "title": "PublishedReply",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "list_scheduled_posts",
+      "description": "List calendar posts for one owned location. This is a read-only action.",
+      "inputSchema": {
+        "properties": {
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "status": {
+            "default": "scheduled",
+            "enum": [
+              "all",
+              "scheduled",
+              "publishing",
+              "published",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "from_time": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "From Time"
+          },
+          "to_time": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "To Time"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "location_id"
+        ],
+        "title": "list_scheduled_postsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ScheduledPostSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "post_id": {
+                "title": "Post Id",
+                "type": "string"
+              },
+              "location_id": {
+                "title": "Location Id",
+                "type": "string"
+              },
+              "scheduled_for": {
+                "format": "date-time",
+                "title": "Scheduled For",
+                "type": "string"
+              },
+              "caption": {
+                "title": "Caption",
+                "type": "string"
+              },
+              "media_url": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Media Url"
+              },
+              "post_type": {
+                "enum": [
+                  "LOCAL_POST",
+                  "PHOTO",
+                  "VIDEO"
+                ],
+                "title": "Post Type",
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "scheduled",
+                  "publishing",
+                  "published",
+                  "failed"
+                ],
+                "title": "Status",
+                "type": "string"
+              }
+            },
+            "required": [
+              "post_id",
+              "location_id",
+              "scheduled_for",
+              "caption",
+              "media_url",
+              "post_type",
+              "status"
+            ],
+            "title": "ScheduledPostSummary",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "posts": {
+            "items": {
+              "$ref": "#/$defs/ScheduledPostSummary"
+            },
+            "title": "Posts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "posts"
+        ],
+        "title": "ScheduledPostList",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "schedule_post",
+      "description": "Schedule an approved text, photo, or video item for Google publication. Call only after the user explicitly confirms the location, content, exact time. Media must use a durable public HTTPS URL.",
+      "inputSchema": {
+        "properties": {
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "publish_at": {
+            "format": "date-time",
+            "title": "Publish At",
+            "type": "string"
+          },
+          "caption": {
+            "default": "",
+            "maxLength": 1500,
+            "title": "Caption",
+            "type": "string"
+          },
+          "post_type": {
+            "default": "LOCAL_POST",
+            "enum": [
+              "LOCAL_POST",
+              "PHOTO",
+              "VIDEO"
+            ],
+            "title": "Post Type",
+            "type": "string"
+          },
+          "media_url": {
+            "anyOf": [
+              {
+                "format": "uri",
+                "maxLength": 2083,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Media Url"
+          }
+        },
+        "required": [
+          "location_id",
+          "publish_at"
+        ],
+        "title": "schedule_postArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "const": "scheduled",
+            "default": "scheduled",
+            "title": "Status",
+            "type": "string"
+          },
+          "post_id": {
+            "title": "Post Id",
+            "type": "string"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "scheduled_for": {
+            "format": "date-time",
+            "title": "Scheduled For",
+            "type": "string"
+          }
+        },
+        "required": [
+          "post_id",
+          "location_id",
+          "scheduled_for"
+        ],
+        "title": "ScheduledPostResult",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "cancel_scheduled_post",
+      "description": "Permanently remove one pending scheduled post. Call only after the user explicitly confirms cancellation. ",
+      "inputSchema": {
+        "properties": {
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "post_id": {
+            "maxLength": 100,
+            "title": "Post Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "location_id",
+          "post_id"
+        ],
+        "title": "cancel_scheduled_postArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "const": "cancelled",
+            "default": "cancelled",
+            "title": "Status",
+            "type": "string"
+          },
+          "post_id": {
+            "title": "Post Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "post_id"
+        ],
+        "title": "CancelledPost",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    }
+  ]
+}

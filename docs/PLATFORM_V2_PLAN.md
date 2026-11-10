@@ -1,3 +1,5 @@
+> **Retired billing design:** Usage credits were removed on 8 November 2026. Apply migration 004 and follow `docs/DEPLOY_CREDIT_RETIREMENT.md`. Credit prices, grants and wallet instructions below describe the previous version.
+
 # GBP Auto Master platform plan
 
 GBP Auto Master is an account-first platform. A signed-in user owns one subscription and one credit wallet, can connect one or more Google identities, and can manage any number of Google Business Profile accounts and locations exposed by those connections.

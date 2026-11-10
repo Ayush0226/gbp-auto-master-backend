@@ -1,0 +1,65 @@
+{
+  "name": "gbp-master",
+  "version": "0.4.0",
+  "description": "Manage Google Business Profiles, reviews, automation, campaigns, media and measured local rankings.",
+  "author": {
+    "name": "Ayush Sony",
+    "url": "https://gbpautomaster.in"
+  },
+  "homepage": "https://gbpautomaster.in",
+  "repository": "https://github.com/Ayush0226/gbp-auto-master-backend",
+  "keywords": [
+    "google-business-profile",
+    "reviews",
+    "local-seo",
+    "automation",
+    "content-calendar"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "GBP Master",
+    "shortDescription": "Manage and grow your GBP",
+    "longDescription": "Manage connected Google Business Profiles, draft and approve replies, schedule campaigns, reuse media and measure local rank. Public writes require confirmation. Usage credits have been retired; payments are temporarily paused.",
+    "developerName": "GBP Auto Master",
+    "category": "Productivity",
+    "capabilities": [
+      "OAuth",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://gbpautomaster.in",
+    "privacyPolicyURL": "https://gbpautomaster.in/privacy",
+    "termsOfServiceURL": "https://gbpautomaster.in/terms",
+    "defaultPrompt": [
+      "Show my connected GBP locations and account access.",
+      "List unanswered reviews and prepare reply drafts.",
+      "Check my local Google rank for one keyword."
+    ],
+    "brandColor": "#2563EB",
+    "supportURL": "https://gbpautomaster.in/support"
+  },
+  "mcpServers": "./.mcp.json",
+  "review": {
+    "commerce": false,
+    "test_cases": {
+      "positive": [
+        {
+          "description": "List owned locations",
+          "prompt": "Show my connected business locations.",
+          "tools_triggered": "list_locations",
+          "expected_behavior": "Returns only owned locations without exposing credentials."
+        }
+      ],
+      "negative": [
+        {
+          "description": "Confirm public replies",
+          "prompt": "Reply to my newest review.",
+          "expected_behavior": "Shows exact proposed text and obtains confirmation before publishing."
+        }
+      ]
+    }
+  },
+  "publication": {
+    "release_notes": "Retires usage credits and payment checkout, aligns lifetime account access, protects credentials and adds recovery safeguards. Public writes still require confirmation."
+  }
+}
